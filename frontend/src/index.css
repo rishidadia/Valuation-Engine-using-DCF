@@ -1,0 +1,108 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-ink-950 text-[#e7e9ee] font-sans antialiased;
+  font-feature-settings: "tnum" 1;
+}
+
+::selection {
+  background: rgba(88, 214, 169, 0.25);
+}
+
+/* thin scrollbars */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: #0a0b0e;
+}
+*::-webkit-scrollbar-thumb {
+  background: #242833;
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #2f3542;
+}
+
+@layer components {
+  .panel {
+    @apply border border-line bg-ink-900;
+  }
+  .panel-header {
+    @apply border-b border-line px-4 py-2.5 flex items-center justify-between;
+  }
+  .micro {
+    @apply text-[10px] uppercase tracking-widest2 text-dim;
+  }
+  .num {
+    @apply font-mono text-[13px] tabular-nums;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 border px-4 py-2 text-[12px] uppercase tracking-widest transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn border-accent-dim bg-accent/10 text-accent hover:bg-accent/20;
+  }
+  .btn-ghost {
+    @apply btn border-line text-muted hover:border-ink-600 hover:text-[#d6dae2];
+  }
+  .input {
+    @apply bg-ink-850 border border-line px-2.5 py-1.5 text-[13px] font-mono text-[#e7e9ee] outline-none focus:border-accent-dim w-full;
+  }
+  .row-hover {
+    @apply hover:bg-ink-850/60 transition-colors duration-100;
+  }
+}
+
+/* provenance tooltip */
+.tip {
+  @apply relative cursor-help border-b border-dotted border-dim;
+}
+.tip:hover::after {
+  content: attr(data-tip);
+  @apply absolute left-0 top-full z-50 mt-1 w-max max-w-xs border border-line bg-ink-850 p-2 text-[11px] leading-snug text-muted shadow-xl;
+  white-space: pre-line;
+}
+
+/* indeterminate loader bar */
+@keyframes loaderSlide {
+  0% { transform: translateX(-100%); }
+  50% { transform: translateX(120%); }
+  100% { transform: translateX(400%); }
+}
+
+/* staggered entrance for list/table rows */
+.stagger > * {
+  animation: fadeIn 0.3s ease-out both;
+}
+.stagger > *:nth-child(1) { animation-delay: 0.02s; }
+.stagger > *:nth-child(2) { animation-delay: 0.05s; }
+.stagger > *:nth-child(3) { animation-delay: 0.08s; }
+.stagger > *:nth-child(4) { animation-delay: 0.11s; }
+.stagger > *:nth-child(5) { animation-delay: 0.14s; }
+.stagger > *:nth-child(6) { animation-delay: 0.17s; }
+.stagger > *:nth-child(7) { animation-delay: 0.2s; }
+.stagger > *:nth-child(8) { animation-delay: 0.23s; }
+.stagger > *:nth-child(n+9) { animation-delay: 0.26s; }
+
+/* counter tick-up helper (driven by .counting class toggling) */
+@keyframes countPop {
+  0% { opacity: 0.4; transform: translateY(4px); }
+  100% { opacity: 1; transform: none; }
+}
+.count-pop {
+  animation: countPop 0.3s ease-out both;
+}
