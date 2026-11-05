@@ -242,6 +242,7 @@ def stage_audit(ctx: PipelineContext) -> None:
     ctx.audit = audit_svc.run_audit(
         ctx.periods, ctx.forecast, ctx.wacc, ctx.fcf, ctx.dcf,
         ctx.effective_values or ctx.base_values, ctx.provider_missing,
+        convention=ctx.options.discount_convention,
     )
 
 

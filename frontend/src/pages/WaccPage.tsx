@@ -182,8 +182,8 @@ export default function WaccPage() {
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {[
             { label: "Beta ±0.25", low: we_re(live, live.beta - 0.25), high: we_re(live, live.beta + 0.25) },
-            { label: "Risk-free ±1.0pp", low: waccWithRf(live, live.rf - 1), high: waccWithRf(live, live.rf + 1) },
-            { label: "MRP ±1.0pp", low: waccWithMrp(live, live.mrp - 1), high: waccWithMrp(live, live.mrp + 1) },
+            { label: "Risk-free ±1.0pp", low: waccWithRf(live, live.rf * 100 - 1), high: waccWithRf(live, live.rf * 100 + 1) },
+            { label: "MRP ±1.0pp", low: waccWithMrp(live, live.mrp * 100 - 1), high: waccWithMrp(live, live.mrp * 100 + 1) },
             { label: "Debt weight ±10pp", low: waccWithWd(live, Math.max(0, live.wd - 0.1)), high: waccWithWd(live, Math.min(1, live.wd + 0.1)) },
           ].map((r) => (
             <div key={r.label} className="border border-line px-3 py-2.5">

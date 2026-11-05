@@ -75,22 +75,42 @@ class YahooPriceProvider:
         }
 
     async def compute_beta(self, symbol: str, benchmark: str = "SPY") -> dict:
-        """OLS beta vs benchmark on aligned daily returns (2y)."""
+        """OLS beta vs benchmark on **date-aligned** daily returns (2y).
+
+        Prices are joined on the actual trading date and returns are computed
+        from the aligned price series. Holidays, halts, or missing prints differ
+        between the stock and the benchmark, so taking the last N returns of each
+        series separately would silently pair returns from different days (and
+        different horizons) and corrupt the regression. Dates present in only
+        one series are dropped.
+        """
         from ...valuation.beta import regression_beta
 
-        _, stock = await self.daily_returns(symbol)
-        bench_dates, bench = await self.daily_returns(benchmark)
-        n = min(len(stock), len(bench))
-        # align by simple index when lengths match; otherwise use common tail
-        s, b = stock[-n:], bench[-n:]
+        stock_hist = await self.history(symbol)
+        bench_hist = await self.history(benchmark)
+        stock_by_date = {p["date"]: float(p["adjclose"]) for p in stock_hist["points"]}
+        bench_by_date = {p["date"]: float(p["adjclose"]) for p in bench_hist["points"]}
+        common = sorted(set(stock_by_date) & set(bench_by_date))
+        if len(common) < 13:
+            raise ProviderError(
+                f"Only {max(len(common) - 1, 0)} overlapping trading days between "
+                f"'{symbol}' and '{benchmark}' — at least 12 are needed to estimate beta.",
+                hint="Request a longer price history or provide beta manually.",
+            )
+        closes_s = np.array([stock_by_date[d] for d in common], dtype=float)
+        closes_b = np.array([bench_by_date[d] for d in common], dtype=float)
+        s = np.diff(closes_s) / closes_s[:-1]
+        b = np.diff(closes_b) / closes_b[:-1]
         beta, alpha, r2 = regression_beta(s, b)
+        dropped = (len(stock_by_date) - len(common)) + (len(bench_by_date) - len(common))
         return {
             "beta": round(float(beta), 4),
             "alpha_daily": float(alpha),
             "r_squared": round(float(r2), 4),
-            "observations": int(n),
+            "observations": int(len(common) - 1),
             "benchmark": benchmark,
-            "window": "2y daily",
+            "window": f"2y daily, date-aligned ({common[0]} to {common[-1]})",
+            "dropped_observations": int(dropped),
         }
 
 

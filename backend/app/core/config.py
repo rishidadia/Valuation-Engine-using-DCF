@@ -28,7 +28,8 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     # --- External data providers (all keyless sources by default) ---
-    sec_user_agent: str = "DCF labs research agent (contact@example.com)"
+    # SEC requires a truthful contact in the User-Agent.
+    sec_user_agent: str = "DCF labs research agent (dadiarishi@gmail.com)"
     sec_company_tickers_url: str = "https://www.sec.gov/files/company_tickers.json"
     sec_company_facts_url: str = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
     yahoo_chart_url: str = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
@@ -40,6 +41,12 @@ class Settings(BaseSettings):
     # --- Uploads ---
     max_upload_bytes: int = 10 * 1024 * 1024  # 10 MB
     allowed_upload_extensions: str = ".xlsx"
+
+    # --- API protection (optional) ---
+    # Comma-separated keys (env: DCF_API_KEYS). Empty = no authentication
+    # (local single-user mode). Each key is a tenant: it can only read the
+    # companies/valuations it created. Set it in any shared/public deployment.
+    dcf_api_keys: str = ""
 
     # --- LLM (optional). Pipeline is fully deterministic without it. ---
     llm_provider: str = "auto"  # auto | openai | groq | google | none

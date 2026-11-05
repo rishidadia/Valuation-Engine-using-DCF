@@ -69,7 +69,7 @@ dcfproject/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py                # FastAPI app, CORS, lifespan, error handler
-│   │   ├── api/                   # 24 routes: company, valuation, template
+│   │   ├── api/                   # 23 routes: company, valuation, template
 │   │   ├── agents/                # 12 LangGraph agents (research…audit)
 │   │   ├── workflows/             # valuation_graph.py — the agent DAG
 │   │   ├── valuation/             # PURE math: capm, wacc, fcf, dcf, beta, sensitivity
@@ -109,7 +109,7 @@ dcfproject/
 | 7. Sensitivity | WACC × g and WACC × exit-multiple heatmaps; tornado of top drivers. | Sensitivity |
 | 8. Scenarios | Base / Bull / Bear / custom deltas applied as overrides, recomputed through the same engine. | Scenarios |
 | 9. Comparables | Peer multiples (MIN_PEERS = 2) from a curated universe or user tickers. | Comps |
-| 10. Audit | 18 checks across 10 families; **critical failures block finalization** (`status: blocked`). | Audit |
+| 10. Audit | 21 checks across 10 families, including independent recomputation of CAPM, WACC, discount factors, TV, EV and the equity bridge; **critical failures block finalization** (`status: blocked`). | Audit |
 | 11. Report | Typed sections, source tables, export as Markdown or full JSON. | Report |
 
 ### Contract highlights (spec-critical)
@@ -141,12 +141,14 @@ stooq.com is JS-challenged/blocked and is deliberately not used.
 
 ```bash
 cd backend
-python -m pytest tests/        # 78 passed
+python -m pytest tests/        # 125 passed
 ```
 
 Covers: pure formula unit tests (CAPM, WACC, FCF, TV, sensitivity, beta), Excel
-ingestion heuristics, and API integration including a live AAPL flow, audit gating and
-error contracts.
+ingestion heuristics and percentage normalisation, date-aligned beta regression,
+independent audit recomputation, manual cost of equity without beta, forecast
+trajectories, API-key isolation, and API integration including a live AAPL flow,
+audit gating and error contracts.
 
 Frontend checks:
 
@@ -160,3 +162,57 @@ npm run build       # production build
 
 Defaults to SQLite (`backend/dcf_labs.db`) via `DATABASE_URL`; set a Postgres URL to
 switch (SQLAlchemy 2.0). No external database is required to run locally.
+
+---
+
+## Upload options (Mode A)
+
+`POST /api/company/upload` accepts two optional form fields alongside the workbook:
+
+| Field | Example | Effect |
+|---|---|---|
+| `currency` | `EUR` | Reporting currency for every period. If omitted, an ISO code in the workbook header is used, else `USD`. |
+| `fiscal_year_end` | `09-30` | Month/day used for each period's `end_date`. Defaults to 12-31. |
+
+A non-USD currency is accepted and labelled, but it is **not converted**: market inputs
+remain US-dollar based (see the coverage note below).
+
+---
+
+## Security & deployment
+
+Local development is unauthenticated by default. For any shared or public deployment,
+set a comma-separated allow list:
+
+```bash
+DCF_API_KEYS="key-one,key-two" python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+With keys configured:
+
+- every `/api` route except `/api/health` and the blank Excel template requires an
+  `X-API-Key` header (401 otherwise);
+- each key is its own tenant: it can only read the companies and valuations it created
+  (cross-tenant access returns 404, so existence is not leaked);
+- ownership is stored as a truncated SHA-256 tenant id in the company's metadata — the
+  key itself is never persisted, and no schema migration is required;
+- the frontend sends the key from `localStorage["dcf_api_key"]` when present.
+
+Also before exposing the API: restrict `CORS_ORIGINS`, terminate TLS in front of
+uvicorn, and back up the database. The SEC requires a real contact in the User-Agent;
+`SEC_USER_AGENT` defaults to the project maintainer and should be set per deployment.
+
+---
+
+## Scope and limitations
+
+- **Geography:** fundamentals come from SEC EDGAR and market inputs from Yahoo/SPY and
+  FRED DGS10, so the engine is a US-company valuation tool. Non-US tickers will usually
+  fail at the fundamentals step.
+- **Currency:** the workbook currency is a reporting label, not an FX conversion. A EUR
+  workbook is valued with US market inputs unless you override beta, the risk-free rate
+  and the risk premium explicitly.
+- **Forecasting:** the model is deterministic and driver-based. Optional trajectories
+  (`growth_path`, `ebit_margin_path`, `growth_fade_to_terminal`,
+  `margin_convergence_years` on the run options) allow non-constant growth and margin
+  paths; there is no ML forecaster.

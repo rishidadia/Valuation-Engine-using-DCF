@@ -62,10 +62,24 @@ def build_wacc(
                 hint="Add peer tickers on the Comparables page, or switch Beta Method to market/manual."
             )
         peer_inputs = []
+        net_debt_peers: list[str] = []
+        tax_fallback_peers: list[str] = []
         for p in usable:
-            net_debt = (p.ev - p.market_cap) if (p.ev is not None and p.market_cap) else 0.0
-            de = (net_debt / p.market_cap) if p.market_cap else 0.0
-            peer_inputs.append((p.ticker, p.levered_beta, max(de, 0.0), tax))
+            equity = p.market_cap
+            # Hamada needs gross debt / equity. EV - market cap is NET debt
+            # (debt minus cash), which understates leverage, so it is only a
+            # flagged fallback when gross debt is unavailable.
+            de = (p.total_debt / equity) if (p.total_debt is not None and equity) else None
+            if de is None:
+                if p.ev is not None and equity:
+                    de = max((p.ev - equity) / equity, 0.0)
+                else:
+                    de = 0.0
+                net_debt_peers.append(p.ticker)
+            peer_tax = p.tax_rate if (p.tax_rate is not None and 0 <= p.tax_rate <= 0.75) else tax
+            if p.tax_rate is None:
+                tax_fallback_peers.append(p.ticker)
+            peer_inputs.append((p.ticker, p.levered_beta, de, peer_tax))
         target_de = values.get("target_de") or 0.0
         est = comparable_beta_estimate(peer_inputs, target_de, tax,
                                        method=options.beta_aggregation)
@@ -73,32 +87,52 @@ def build_wacc(
         beta_note = "; ".join(est.formula_lines)
         for ticker, bu in est.unlevered_betas:
             peer = next((p for p in usable if p.ticker == ticker), None)
+            row = next((r for r in peer_inputs if r[0] == ticker), None)
             beta_details.append(BetaDetail(
                 ticker=ticker, name=peer.name if peer else None,
                 levered_beta=peer.levered_beta if peer else None,
-                tax_rate=tax, debt_equity=next(
-                    (r[2] for r in peer_inputs if r[0] == ticker), None),
+                tax_rate=row[3] if row else tax,
+                debt_equity=row[2] if row else None,
                 unlevered_beta=bu, selected=True,
-                note="unlevered at peer D/E, aggregated, relevered at target D/E",
+                note="unlevered at peer gross D/E and peer tax, aggregated, "
+                     "relevered at target D/E",
             ))
         warnings.append(
             f"Beta from {len(usable)} comparables ({options.beta_aggregation} unlevered, "
             f"relevered at D/E {target_de:.2f})."
         )
+        if net_debt_peers:
+            warnings.append(
+                "Peer gross debt unavailable for " + ", ".join(net_debt_peers) +
+                " — net debt (EV - market cap) used as a D/E proxy; beta may be under-levered."
+            )
+        if tax_fallback_peers:
+            warnings.append(
+                "Peer effective tax rate unavailable for " + ", ".join(tax_fallback_peers) +
+                f" — target tax rate {tax:.2%} used for their unlevering."
+            )
     else:
         beta = values.get("beta")
         if beta is None:
-            raise MissingDataError(
-                "Beta is unavailable and no beta method produced a value.",
-                hint="Set Beta Method to 'Manual Beta' and enter a value, or add comparable companies.",
+            # A manually supplied cost of equity is sufficient: beta only feeds
+            # the CAPM identity, which is not used in that case.
+            if options.cost_of_equity_method == "capm":
+                raise MissingDataError(
+                    "Beta is unavailable and no beta method produced a value.",
+                    hint="Set Beta Method to 'Manual Beta' and enter a value, or add comparable companies.",
+                )
+            warnings.append(
+                "Beta is not required because a manual cost of equity is in use; "
+                "no CAPM reference is computed."
             )
-        beta_note = ("Market regression vs SPY" if beta_method == "market"
-                     else "Manual beta supplied by the user")
-        beta_details.append(BetaDetail(
-            ticker=None, levered_beta=beta, tax_rate=tax,
-            debt_equity=values.get("target_de") or 0.0, unlevered_beta=None,
-            selected=True, note=beta_note,
-        ))
+        else:
+            beta_note = ("Market regression vs SPY" if beta_method == "market"
+                         else "Manual beta supplied by the user")
+            beta_details.append(BetaDetail(
+                ticker=None, levered_beta=beta, tax_rate=tax,
+                debt_equity=values.get("target_de") or 0.0, unlevered_beta=None,
+                selected=True, note=beta_note,
+            ))
 
     # ---- cost of equity -----------------------------------------------------
     cost_of_equity: float | None = None
@@ -108,6 +142,11 @@ def build_wacc(
         mrp = values.get("market_risk_premium", DEFAULT_MRP)
         if rf is None:
             raise MissingDataError("Risk-free rate is required for CAPM.")
+        if beta is None:
+            raise MissingDataError(
+                "Beta is required for CAPM.",
+                hint="Supply beta, or switch Cost of Equity Method to a manual expected return.",
+            )
         capm = calculate_capm(rf, beta, mrp)
         cost_of_equity = capm.cost_of_equity
         capm_formula = capm.formula
@@ -118,10 +157,15 @@ def build_wacc(
                 "Manual expected cost of equity not provided.",
                 hint="Enter 'Cost of Equity' on the Assumptions page (decimal, e.g. 0.12).",
             )
-        capm = calculate_capm(values.get("risk_free_rate") or 0.0, beta,
-                              values.get("market_risk_premium", DEFAULT_MRP))
-        capm_formula = (f"CAPM reference = {capm.cost_of_equity:.2%}; "
-                        f"USER OVERRIDE in use = {cost_of_equity:.2%}")
+        rf = values.get("risk_free_rate")
+        mrp = values.get("market_risk_premium", DEFAULT_MRP)
+        if beta is not None and rf is not None:
+            capm = calculate_capm(rf, beta, mrp)
+            capm_formula = (f"CAPM reference = {capm.cost_of_equity:.2%}; "
+                            f"manual expected return in use = {cost_of_equity:.2%}")
+        else:
+            capm_formula = (f"Manual expected return in use = {cost_of_equity:.2%}; "
+                            "CAPM reference not computed (beta or risk-free rate not supplied).")
         warnings.append("Cost of equity uses a manual expected return, not CAPM (user choice).")
 
     # ---- cost of debt -------------------------------------------------------
@@ -188,6 +232,17 @@ def build_wacc(
             f"({(values.get('terminal_growth') or 0):.2%}) — terminal value will be blocked."
         )
 
+    if beta is None:
+        beta_sv = _sv(None, Unit.RATIO, "Not required for the manual cost of equity",
+                      ValueStatus.MISSING, SourceType.MODEL_ASSUMPTION)
+    else:
+        beta_sv = _sv(
+            beta, Unit.RATIO, beta_note or "beta",
+            ValueStatus.CALCULATED if beta_method == "comparables" else ValueStatus.RETRIEVED,
+            SourceType.MODEL_CALCULATION if beta_method == "comparables" else SourceType.PUBLIC_API,
+            beta_note,
+        )
+
     return WaccCalculation(
         market_value_equity=_sv(me, Unit.CURRENCY,
                                 "Market capitalisation" if me else "missing",
@@ -204,10 +259,7 @@ def build_wacc(
                         ValueStatus.CALCULATED, SourceType.MODEL_CALCULATION, weights.formula),
         risk_free_rate=_sv(values.get("risk_free_rate"), Unit.PERCENT,
                            "FRED DGS10 / user", ValueStatus.RETRIEVED, SourceType.PUBLIC_API),
-        beta=_sv(beta, Unit.RATIO, beta_note or "beta", ValueStatus.CALCULATED
-                 if beta_method == "comparables" else ValueStatus.RETRIEVED,
-                 SourceType.MODEL_CALCULATION if beta_method == "comparables" else SourceType.PUBLIC_API,
-                 beta_note),
+        beta=beta_sv,
         market_risk_premium=_sv(values.get("market_risk_premium", DEFAULT_MRP), Unit.PERCENT,
                                 "Model default / user", ValueStatus.ESTIMATED,
                                 SourceType.MODEL_ASSUMPTION),

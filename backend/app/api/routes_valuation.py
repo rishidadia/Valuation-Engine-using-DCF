@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ..core.errors import AppError, MissingDataError, NotFoundError, ValidationError
+from ..core.security import current_tenant, owner_matches
 from ..data.providers.public_company import PublicCompanyProvider
 from ..db.repository import Repository, load_view
 from ..db.session import SessionLocal
@@ -48,7 +49,8 @@ def get_db():
 
 def _load_company_context(session: Session, company_id: str) -> tuple[CompanyRow, PipelineContext]:
     row = session.get(CompanyRow, company_id)
-    if row is None:
+    # Cross-tenant access is indistinguishable from a missing company.
+    if row is None or not owner_matches(row.meta, current_tenant()):
         raise NotFoundError(f"Company {company_id} not found")
     meta = dict(row.meta or {})
     periods = [PeriodData.model_validate(p) for p in meta.get("periods", [])]
@@ -138,11 +140,21 @@ async def run_valuation(body: RunValuationRequest, session: Session = Depends(ge
                                                      "detail": str(exc)}) from exc
 
 
-def _get_view(session: Session, valuation_id: str) -> tuple[ValuationRow, ValuationView]:
+def _owned_valuation(session: Session, valuation_id: str) -> ValuationRow:
+    """Load a valuation only if the caller owns its company."""
     row = session.get(ValuationRow, valuation_id)
+    if row is not None:
+        company = session.get(CompanyRow, row.company_id)
+        if company is None or not owner_matches(company.meta, current_tenant()):
+            row = None
     if row is None:
         raise HTTPException(status_code=404, detail={"error": "not_found",
                                                      "detail": f"Valuation {valuation_id} not found"})
+    return row
+
+
+def _get_view(session: Session, valuation_id: str) -> tuple[ValuationRow, ValuationView]:
+    row = _owned_valuation(session, valuation_id)
     view = load_view(row)
     if view is None:
         raise HTTPException(status_code=409, detail={"error": "not_ready",
@@ -228,6 +240,9 @@ def list_valuations(session: Session = Depends(get_db)):
     repo = Repository(session)
     out = []
     for v in repo.list_valuations():
+        company = session.get(CompanyRow, v.company_id)
+        if company is None or not owner_matches(company.meta, current_tenant()):
+            continue
         payload = v.payload or {}
         summary = payload.get("summary", {})
         out.append({
@@ -278,10 +293,7 @@ def _recompute(session: Session, row: ValuationRow, *, overrides: dict[str, floa
 @router.post("/valuation/{valuation_id}/assumptions")
 def post_assumptions(valuation_id: str, body: AssumptionsRequest,
                      session: Session = Depends(get_db)):
-    row = session.get(ValuationRow, valuation_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail={"error": "not_found",
-                                                     "detail": "Valuation not found"})
+    row = _owned_valuation(session, valuation_id)
     try:
         if not body.recompute:
             merged = dict(row.overrides or {})
@@ -302,10 +314,7 @@ def post_assumptions(valuation_id: str, body: AssumptionsRequest,
 @router.post("/valuation/{valuation_id}/scenarios")
 def post_scenarios(valuation_id: str, body: ScenarioPatchRequest,
                    session: Session = Depends(get_db)):
-    row = session.get(ValuationRow, valuation_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail={"error": "not_found",
-                                                     "detail": "Valuation not found"})
+    row = _owned_valuation(session, valuation_id)
     try:
         if not body.recompute:
             row.active_scenario = body.active

@@ -214,6 +214,100 @@ def _to_number(v) -> float | None:
     return None
 
 
+def _to_number_with_pct(v) -> tuple[float | None, bool]:
+    """Parse a cell and report whether it carried an explicit percent sign."""
+    n = _to_number(v)
+    if n is None:
+        return None, False
+    return n, isinstance(v, str) and "%" in v
+
+
+def _normalise_percent(value: float, had_percent_sign: bool) -> float:
+    """8, 8.0, 8.00% and 0.08 all mean 8%.
+
+    Percent assumptions are stored as decimals. A value above 1 without a %
+    sign is interpreted as percentage points (8 -> 0.08), which is the way
+    finance workbooks are normally typed; a value at or below 1 is already a
+    decimal (0.08 -> 0.08).
+    """
+    if had_percent_sign or abs(value) > 1.0:
+        return value / 100.0
+    return value
+
+
+# Assumption keys whose natural unit is a percentage (stored as a decimal).
+PERCENT_ASSUMPTIONS = {
+    "revenue_growth", "ebit_margin", "tax_rate", "terminal_growth",
+    "da_pct", "capex_pct", "nwc_pct", "risk_free_rate",
+    "market_risk_premium", "cost_of_debt", "cost_of_equity",
+}
+
+# ISO codes recognised in workbook headers. The workbook's own currency label
+# is honoured; USD remains the default so existing files keep working.
+CURRENCY_CODES = (
+    "USD", "EUR", "GBP", "JPY", "INR", "CAD", "AUD", "CHF", "CNY", "SEK",
+    "NOK", "DKK", "BRL", "MXN", "SGD", "HKD", "ZAR", "PLN", "TRY", "AED",
+)
+
+
+def _normalise_currency(value: str | None) -> str | None:
+    if value is None or not str(value).strip():
+        return None
+    code = str(value).strip().upper()
+    if not re.fullmatch(r"[A-Z]{3}", code):
+        raise ExcelValidationError(
+            f"Invalid currency '{value}'.",
+            hint="Use a three-letter ISO code such as USD, EUR, GBP or INR.",
+        )
+    return code
+
+
+def _detect_currency(wb) -> str | None:
+    """Look for an explicit ISO code in the first rows of the first sheets."""
+    for ws in wb.worksheets[:3]:
+        for row in ws.iter_rows(min_row=1, max_row=12, max_col=12, values_only=True):
+            for v in row:
+                if not isinstance(v, str):
+                    continue
+                up = v.upper()
+                if "US$" in up:
+                    return "USD"
+                for code in CURRENCY_CODES:
+                    if re.search(rf"\b{code}\b", up):
+                        return code
+    return None
+
+
+def _parse_fiscal_year_end(value: str | None) -> tuple[int, int] | None:
+    """Parse 'MM-DD' / 'MM/DD' fiscal year-end (e.g. '09-30' for Apple)."""
+    if value is None or not str(value).strip():
+        return None
+    m = re.fullmatch(r"\s*(\d{1,2})[-/](\d{1,2})\s*", str(value))
+    if not m:
+        raise ExcelValidationError(
+            f"Invalid fiscal year end '{value}'.",
+            hint="Use MM-DD, e.g. 09-30 for a September fiscal year end.",
+        )
+    month, day = int(m.group(1)), int(m.group(2))
+    try:
+        date(2000, month, day)  # leap year so 02-29 is accepted
+    except ValueError as exc:
+        raise ExcelValidationError(
+            f"Invalid fiscal year end '{value}' (month {month}, day {day})."
+        ) from exc
+    return month, day
+
+
+def _fiscal_end_date(year: int, fye: tuple[int, int] | None) -> date:
+    if fye is None:
+        return date(year, 12, 31)
+    month, day = fye
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return date(year, month, 28)  # e.g. 02-29 in a non-leap year
+
+
 class ExcelProvider(DataProvider):
     name = "excel"
     kind = "excel"
@@ -244,7 +338,8 @@ class ExcelProvider(DataProvider):
             raise ExcelValidationError("The uploaded file is empty.")
 
     async def fetch(self, path: str | Path, original_name: str | None = None,
-                    company_name: str | None = None, **_) -> ProviderPayload:
+                    company_name: str | None = None, *, currency: str | None = None,
+                    fiscal_year_end: str | None = None, **_) -> ProviderPayload:
         path = Path(path)
         self.validate_file(path, original_name or path.name)
         try:
@@ -258,6 +353,11 @@ class ExcelProvider(DataProvider):
         try:
             if wb.sheetnames and len(wb.sheetnames) > self.MAX_SHEETS:
                 raise ExcelValidationError(f"Workbook has too many sheets ({len(wb.sheetnames)}).")
+
+            requested_currency = _normalise_currency(currency)
+            workbook_currency = _detect_currency(wb) if requested_currency is None else None
+            reporting_currency = requested_currency or workbook_currency or "USD"
+            fye = _parse_fiscal_year_end(fiscal_year_end)
 
             detected: list[_Detected] = []
             previews: list[dict] = []
@@ -279,7 +379,7 @@ class ExcelProvider(DataProvider):
                     if det.rows:
                         detected.append(det)
 
-            periods = self._merge(detected)
+            periods = self._merge(detected, currency=reporting_currency, fiscal_year_end=fye)
             if not periods:
                 raise ExcelValidationError(
                     "No financial statement rows could be identified in this workbook.",
@@ -290,13 +390,23 @@ class ExcelProvider(DataProvider):
             missing = self._missing(periods)
             company = CompanyInfo(
                 name=company_name or _norm(company_hints.get("name")) or path.stem.replace("_", " ").title(),
-                currency="USD", is_public=False,
+                currency=reporting_currency, is_public=False,
                 source_type=SourceType.UPLOADED_EXCEL, source="Uploaded Excel",
                 source_url=None, retrieved_at=today(), provider=self.name,
                 notes=["Private-company inputs are labelled as user data; "
                        "market-based inputs (beta, price) must be supplied by the user or comparables."],
             )
             mapping_notes, ambiguous_warnings = self._mapping_notes(detected)
+            if reporting_currency != "USD":
+                ambiguous_warnings.append(
+                    f"Reporting currency is {reporting_currency}. Market inputs "
+                    "(risk-free rate, SPY benchmark, US Treasury discounting) are "
+                    "US-dollar based — review them before valuing a non-US company."
+                )
+            if fye is not None:
+                ambiguous_warnings.append(
+                    f"Fiscal year end assumed to be {fye[0]:02d}-{fye[1]:02d} for every period."
+                )
             sources = self._sources(detected, assumption_values, debt_instruments)
 
             payload = ProviderPayload(
@@ -384,7 +494,8 @@ class ExcelProvider(DataProvider):
         det.ambiguous = ambiguous
         return det
 
-    def _merge(self, detected: list[_Detected]) -> list[PeriodData]:
+    def _merge(self, detected: list[_Detected], *, currency: str = "USD",
+               fiscal_year_end: tuple[int, int] | None = None) -> list[PeriodData]:
         order = {"income": 0, "cashflow": 1, "balance": 2}
         detected = sorted(detected, key=lambda d: order.get(d.kind, 9))
         # Unit inheritance: when only one statement sheet declares units
@@ -425,8 +536,9 @@ class ExcelProvider(DataProvider):
             metrics = by_year[year]
             _derive_derived(metrics, year)
             periods.append(PeriodData(
-                period=f"FY{year}", fiscal_year=year, end_date=date(year, 12, 31),
-                currency="USD", unit_scale=1.0, metrics=metrics,
+                period=f"FY{year}", fiscal_year=year,
+                end_date=_fiscal_end_date(year, fiscal_year_end),
+                currency=currency, unit_scale=1.0, metrics=metrics,
             ))
         return periods
 
@@ -467,13 +579,16 @@ class ExcelProvider(DataProvider):
             label = next((v for v in row if isinstance(v, str)), None)
             if not label:
                 continue
-            nums = [ _to_number(v) for v in row if _to_number(v) is not None ]
-            if not nums:
+            values = [parsed for parsed in (_to_number_with_pct(v) for v in row)
+                      if parsed[0] is not None]
+            if not values:
                 continue
+            raw, had_percent = values[0]
             text = _norm(label).lower()
             for rx, key, _scale in ASSUMPTION_PATTERNS:
                 if re.search(rx, text, re.I):
-                    out[key] = nums[0]
+                    out[key] = (_normalise_percent(raw, had_percent)
+                                if key in PERCENT_ASSUMPTIONS else raw)
                     break
         return out
 

@@ -23,6 +23,7 @@ def run_audit(
     dcf: DcfResult | None,
     values: dict[str, float | None],
     provider_missing: list[str] | None = None,
+    convention: str = "end",
 ) -> AuditResult:
     checks: list[Check] = []
     blocking: list[str] = []
@@ -143,7 +144,11 @@ def run_audit(
         else:
             add("Capital weights", CheckStatus.PASS,
                 f"w_e {ew:.1%} + w_d {dw:.1%} = 1 (debt/equity counted once).")
-        if wacc.beta.value is not None and not -1 <= wacc.beta.value <= 4:
+        if wacc.beta.value is None:
+            add("Beta range", CheckStatus.WARNING,
+                "Beta not supplied — acceptable only because a manual cost of equity "
+                "is in use; no CAPM reference exists.", "warning")
+        elif not -1 <= wacc.beta.value <= 4:
             add("Beta range", CheckStatus.FAIL,
                 f"Beta {wacc.beta.value:.2f} outside [-1, 4].", "critical", block=True)
         else:
@@ -221,8 +226,9 @@ def run_audit(
         ok = all(g is not None for g in gs) and all(m is not None for m in margins)
         if ok:
             add("Forecast consistency", CheckStatus.PASS,
-                f"{len(forecast.years)} forecast years, constant growth "
-                f"{gs[0]:.2%} and margin {margins[0]:.2%} applied as specified.")
+                f"{len(forecast.years)} forecast years; revenue growth "
+                f"{min(gs):.2%} to {max(gs):.2%}, EBIT margin "
+                f"{min(margins):.2%} to {max(margins):.2%}.")
         else:
             add("Forecast consistency", CheckStatus.FAIL,
                 "Forecast contains missing drivers.", "critical", block=True)
@@ -241,6 +247,107 @@ def run_audit(
         if latest.value("cash") is not None and values.get("market_debt") is not None:
             add("Debt/equity treatment", CheckStatus.PASS,
                 "Cash added and debt subtracted exactly once in the EV → equity bridge.")
+
+    # ---- 11. independent recomputation of the discounting chain --------------
+    # The audit rebuilds each identity from its inputs instead of trusting the
+    # stored result, so a bug in any stage cannot pass unnoticed.
+    def _close(a: float | None, b: float | None, *,
+               rel: float = 1e-9, abs_: float = 1.0) -> bool:
+        if a is None or b is None:
+            return False
+        return abs(a - b) <= max(abs_, rel * max(abs(a), abs(b)))
+
+    def _recompute(name: str, expected: float | None, reported: float | None,
+                   formula: str, *, rel: float = 1e-9, abs_: float = 1.0) -> None:
+        if expected is None or reported is None:
+            return
+        if _close(expected, reported, rel=rel, abs_=abs_):
+            add(name, CheckStatus.PASS,
+                f"{formula} = {expected:,.6g} reproduces the stored value.")
+        else:
+            add(name, CheckStatus.FAIL,
+                f"Stored {reported:,.6g} != recomputed {expected:,.6g} ({formula}).",
+                "critical", block=True)
+
+    # CAPM: Re = Rf + Beta x MRP
+    if (wacc and wacc.cost_of_equity_method == "capm"
+            and wacc.cost_of_equity.value is not None):
+        rf, b, mrp = (wacc.risk_free_rate.value, wacc.beta.value,
+                      wacc.market_risk_premium.value)
+        if rf is not None and b is not None and mrp is not None:
+            _recompute("CAPM recomputation", rf + b * mrp, wacc.cost_of_equity.value,
+                       f"Rf + Beta x MRP", rel=1e-9, abs_=1e-12)
+
+    # WACC: we x Re + wd x Rd x (1 - T)
+    if (wacc and wacc.wacc.value is not None and wacc.cost_of_equity.value is not None
+            and wacc.cost_of_debt.value is not None and wacc.tax_rate.value is not None
+            and wacc.equity_weight.value is not None and wacc.debt_weight.value is not None):
+        expected_wacc = (wacc.equity_weight.value * wacc.cost_of_equity.value
+                         + wacc.debt_weight.value * wacc.cost_of_debt.value
+                         * (1 - wacc.tax_rate.value))
+        _recompute("WACC recomputation", expected_wacc, wacc.wacc.value,
+                   "we x Re + wd x Rd x (1 - T)", rel=1e-9, abs_=1e-12)
+
+    # Discount factors: DF_t = 1 / (1 + WACC) ** t, using the stated convention
+    if dcf and dcf.pv_rows and dcf.discount_rate:
+        offset = 0.0 if convention == "end" else 0.5
+        worst = None
+        for row in dcf.pv_rows:
+            idx, stored = row.get("index"), row.get("discount_factor")
+            if idx is None or stored is None:
+                continue
+            expected_df = 1.0 / ((1.0 + dcf.discount_rate) ** (idx - offset))
+            if abs(expected_df - stored) > 5e-7:
+                worst = (idx, stored, expected_df)
+                break
+        if worst:
+            add("Discount factors", CheckStatus.FAIL,
+                f"Year {worst[0]}: stored DF {worst[1]:.6f} != recomputed "
+                f"{worst[2]:.6f} at WACC {dcf.discount_rate:.2%} ({convention} convention).",
+                "critical", block=True)
+        else:
+            add("Discount factors", CheckStatus.PASS,
+                f"All {len(dcf.pv_rows)} discount factors reproduce 1/(1+WACC)^t "
+                f"at {dcf.discount_rate:.2%} ({convention} convention).")
+
+    # Terminal value and its present value
+    if dcf:
+        perp = next((m for m in dcf.terminal_methods
+                     if m.method == "perpetuity_growth" and m.valid), None)
+        if perp and perp.terminal_value is not None:
+            tfcf = perp.inputs.get("terminal_fcf")
+            g = perp.inputs.get("terminal_growth")
+            w = dcf.discount_rate
+            if tfcf is not None and g is not None and w > g:
+                expected_tv = tfcf * (1 + g) / (w - g)
+                _recompute("Terminal value recomputation", expected_tv,
+                           perp.terminal_value,
+                           "FCF_n x (1+g) / (WACC-g)", rel=1e-9, abs_=1e-6)
+                if perp.pv_terminal_value is not None and dcf.pv_rows:
+                    last_df = dcf.pv_rows[-1].get("discount_factor")
+                    if last_df:
+                        _recompute("PV of terminal value", expected_tv * last_df,
+                                   perp.pv_terminal_value,
+                                   "TV x last discount factor", rel=1e-9, abs_=1.0)
+
+        # EV and equity bridge
+        selected = next((m for m in dcf.terminal_methods
+                         if m.method == dcf.selected_method and m.valid), None)
+        if selected and selected.pv_terminal_value is not None:
+            expected_ev = dcf.pv_forecast_fcf + selected.pv_terminal_value
+            _recompute("Enterprise value recomputation", expected_ev,
+                       dcf.enterprise_value, "PV(FCF) + PV(TV)")
+            # Bridge identity is checked against the *reported* EV so a
+            # tampered EV or equity value cannot stay mutually consistent.
+            expected_eq = (dcf.enterprise_value or 0.0) + (dcf.cash or 0.0) - (dcf.debt or 0.0)
+            _recompute("Equity bridge recomputation", expected_eq,
+                       dcf.equity_value, "EV + Cash - Debt")
+            if dcf.shares_outstanding and dcf.equity_value is not None \
+                    and dcf.implied_share_price is not None:
+                _recompute("Implied price recomputation",
+                           dcf.equity_value / dcf.shares_outstanding,
+                           dcf.implied_share_price, "Equity / Shares",
+                           rel=1e-9, abs_=1e-6)
 
     status = CheckStatus.PASS
     if any(c.status == CheckStatus.WARNING for c in checks):

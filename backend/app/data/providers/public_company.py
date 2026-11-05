@@ -190,7 +190,17 @@ class PublicCompanyProvider(DataProvider):
         g = latest.value
         revenue, ebit, ni = g("revenue"), g("ebit"), g("net_income")
         ebitda = g("ebitda") or ((ebit + g("da")) if ebit is not None and g("da") is not None else None)
-        cash, debt = g("cash") or 0.0, g("total_debt") or 0.0
+        cash_v, debt_v = g("cash"), g("total_debt")
+        cash, debt = cash_v or 0.0, debt_v or 0.0
+
+        # Effective peer tax rate, used by the Hamada unlevering step instead of
+        # silently borrowing the target company's rate.
+        tax_expense, ebt = g("income_tax_expense"), g("ebt")
+        peer_tax = None
+        if tax_expense is not None and ebt not in (None, 0) and ebt > 0:
+            candidate = abs(tax_expense) / ebt
+            if 0 <= candidate <= 0.75:
+                peer_tax = candidate
 
         price = beta = None
         try:
@@ -206,11 +216,13 @@ class PublicCompanyProvider(DataProvider):
         shares = g("shares_outstanding")
         mcap = price * shares if price and shares else None
         ev = mcap + debt - cash if mcap is not None else None
+        gross_de = (debt_v / mcap) if (debt_v is not None and mcap) else None
 
         pm = PeerMetrics(
             ticker=ticker, name=sec_out["company"].name, currency=latest.currency,
             ev=ev, revenue=revenue, ebitda=ebitda, ebit=ebit, net_income=ni,
-            market_cap=mcap,
+            market_cap=mcap, total_debt=debt_v, cash=cash_v, tax_rate=peer_tax,
+            debt_equity=gross_de,
             ev_revenue=(ev / revenue) if ev and revenue else None,
             ev_ebitda=(ev / ebitda) if ev and ebitda else None,
             ev_ebit=(ev / ebit) if ev and ebit else None,

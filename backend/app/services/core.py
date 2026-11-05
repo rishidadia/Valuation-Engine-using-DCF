@@ -38,8 +38,15 @@ class CoreResult:
 def run_forecast(periods: list[PeriodData], values: dict[str, float | None],
                  options, *, growth_overridden: bool = False) -> ForecastResult:
     drivers = {k: values.get(k) for k in DRIVER_KEYS}
-    return build_forecast(periods, drivers, years=options.forecast_years,
-                          growth_overridden=growth_overridden)
+    return build_forecast(
+        periods, drivers, years=options.forecast_years,
+        growth_overridden=growth_overridden,
+        growth_path=getattr(options, "growth_path", None),
+        margin_path=getattr(options, "ebit_margin_path", None),
+        terminal_growth=(values.get("terminal_growth")
+                         if getattr(options, "growth_fade_to_terminal", False) else None),
+        margin_convergence_years=getattr(options, "margin_convergence_years", 0),
+    )
 
 
 def run_wacc(periods: list[PeriodData], values: dict[str, float | None], options, *,

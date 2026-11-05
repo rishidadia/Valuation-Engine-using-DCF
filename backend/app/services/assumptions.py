@@ -115,8 +115,11 @@ def build_assumptions(
 
     # ---- WACC inputs ---------------------------------------------------------
     rf = market.risk_free_rate
-    if rf is None and "risk_free_rate" in excel_values:
-        rf = excel_values["risk_free_rate"]
+    # Precedence: workbook/user input > retrieved market data > model default.
+    rf_excel = excel_values.get("risk_free_rate")
+    rf = market.risk_free_rate
+    if rf_excel is not None:
+        rf = rf_excel
         rf_source, rf_status, rf_type = "User input", ValueStatus.USER_DATA, SourceType.USER_INPUT
     elif rf is not None:
         rf_source, rf_status, rf_type = (market.risk_free_source or "Public API"), ValueStatus.RETRIEVED, SourceType.PUBLIC_API

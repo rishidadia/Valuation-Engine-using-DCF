@@ -17,7 +17,7 @@ typed, stateful viewer over the backend's Pydantic contracts.
 │                                                                       │
 │  main.py ─ lifespan: init_db() · CORS · AppError handler              │
 │                                                                       │
-│  api/          24 routes                                              │
+│  api/          23 routes                                              │
 │    routes_company.py    POST /company/public · /company/upload        │
 │                          GET  /company/template · /company/{id}       │
 │                          PATCH /company/{id}/metrics                  │
@@ -88,7 +88,9 @@ START → research → data → validation → historical → forecast → wacc 
 4. **Override & recompute** — `POST /assumptions` and `POST /scenarios` apply deltas
    through `apply_overrides` (bounds-validated) and `recompute_view`, re-running only
    the affected stages. Precedence: **USER OVERRIDE > user input > model estimate**.
-5. **Audit** — 18 checks across 10 families; a critical failure blocks finalization.
+5. **Audit** — 21 checks across 10 families, including independent recomputation of
+   CAPM, WACC, discount factors, terminal value, EV and the equity bridge; a critical
+   failure blocks finalization.
 6. **Report** — typed sections rendered as Markdown or full JSON export.
 
 ## Frontend structure

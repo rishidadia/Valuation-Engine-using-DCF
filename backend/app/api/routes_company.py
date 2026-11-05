@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from ..agents import financial_data as data_agent
 from ..core.config import settings
 from ..core.errors import AppError, ExcelValidationError, ProviderError
+from ..core.security import current_tenant, owner_matches
 from ..data.excel_template import build_template
 from ..data.providers import ExcelProvider, PublicCompanyProvider, get_provider
 from ..data.providers.fred import FredRiskFreeProvider
@@ -21,7 +22,7 @@ from ..db.repository import Repository
 from ..db.session import SessionLocal
 from ..models.orm import Company as CompanyRow
 from ..schemas.api import IngestResponse, MetricOverride, MetricsPatchRequest, PublicCompanyBody
-from ..schemas.common import METRIC_LABELS, SourceType, SourcedValue, Unit, ValueStatus
+from ..schemas.common import METRIC_LABELS, SourceRecord, SourceType, SourcedValue, Unit, ValueStatus
 from ..schemas.company import CompanyInfo, DataReview, DataReviewRow, PeriodData
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,8 @@ async def ingest_public(body: PublicCompanyBody, session: Session = Depends(_ses
     repo = Repository(session)
     company = _persist(repo, payload, mode="public",
                        excel_values={}, debt_instruments=[],
-                       peer_tickers=[p for p in (payload.preview[0].get("peers") if payload.preview else []) or []])
+                       peer_tickers=[p for p in (payload.preview[0].get("peers") if payload.preview else []) or []],
+                       owner=current_tenant())
     review = _build_review(payload.company, payload.periods, payload.missing, payload.warnings)
     session.commit()
     return IngestResponse(company_id=company.id, mode="public", review=review,
@@ -79,6 +81,8 @@ async def ingest_public(body: PublicCompanyBody, session: Session = Depends(_ses
 async def ingest_excel(
     file: UploadFile = File(...),
     company_name: str | None = Form(default=None),
+    currency: str | None = Form(default=None),
+    fiscal_year_end: str | None = Form(default=None),
     session: Session = Depends(_session),
 ):
     original = file.filename or "workbook.xlsx"
@@ -100,7 +104,8 @@ async def ingest_excel(
     try:
         path.write_bytes(data)
         payload, runs, mapping = await data_agent.ingest(
-            provider, path=path, original_name=safe, company_name=company_name)
+            provider, path=path, original_name=safe, company_name=company_name,
+            currency=currency, fiscal_year_end=fiscal_year_end)
     except AppError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc
     finally:
@@ -110,11 +115,28 @@ async def ingest_excel(
         except OSError:
             pass
 
-    # market-level input: try the risk-free rate (labelled source)
+    # Market-level input: the retrieved 10Y Treasury is written into the market
+    # snapshot (not just a warning) so WACC uses it instead of the static 4% default.
     try:
         obs = await FredRiskFreeProvider().latest_10y()
-        payload.warnings.append(f"Risk-free rate retrieved from FRED DGS10: {obs['rate']:.2%} "
-                                f"({obs['as_of']}); used unless you override it.")
+        payload.market.risk_free_rate = obs["rate"]
+        payload.market.risk_free_source = (
+            f"FRED DGS10 as of {obs['as_of']} ({obs['rate']:.2%})"
+        )
+        payload.sources.append(SourceRecord(
+            id="fred-dgs10",
+            name=f"FRED DGS10 — 10Y Treasury ({obs['as_of']})",
+            source_type=SourceType.PUBLIC_API,
+            url="https://fred.stlouisfed.org/series/DGS10",
+            retrieved_at=datetime.now(timezone.utc).date(),
+            description="Risk-free rate proxy: 10-year US Treasury constant-maturity yield.",
+            metrics=["risk_free_rate"],
+        ))
+        payload.warnings.append(
+            f"Risk-free rate retrieved from FRED DGS10: {obs['rate']:.2%} "
+            f"({obs['as_of']}) and stored as the market risk-free rate; "
+            "override it on the Assumptions page to change it."
+        )
     except Exception:  # noqa: BLE001 — optional enrichment
         payload.warnings.append("Risk-free rate provider unavailable — set it manually "
                                 "on the Assumptions page (labelled model default until then).")
@@ -127,7 +149,7 @@ async def ingest_excel(
                        excel_values=getattr(provider, "assumption_values", {}),
                        debt_instruments=getattr(provider, "debt_instruments", []),
                        mapping_notes=[m.model_dump(mode="json") for m in getattr(provider, "mapping_notes", [])],
-                       peer_tickers=[])
+                       peer_tickers=[], owner=current_tenant())
     review = _build_review(payload.company, payload.periods, payload.missing, payload.warnings)
     session.commit()
     return IngestResponse(company_id=company.id, mode="excel", review=review,
@@ -153,7 +175,8 @@ def download_template():
 def get_company(company_id: str, session: Session = Depends(_session)):
     repo = Repository(session)
     row = repo.get_company(company_id)
-    if row is None:
+    # Cross-tenant reads are reported as "not found" so existence is not leaked.
+    if row is None or not owner_matches(row.meta, current_tenant()):
         raise HTTPException(status_code=404, detail={"error": "not_found",
                                                      "detail": f"Company {company_id} not found"})
     meta = row.meta or {}
@@ -172,7 +195,7 @@ def patch_metrics(company_id: str, body: MetricsPatchRequest,
                   session: Session = Depends(_session)):
     """Data Review corrections: user fixes a value or fills a missing metric."""
     row = session.get(CompanyRow, company_id)
-    if row is None:
+    if row is None or not owner_matches(row.meta, current_tenant()):
         raise HTTPException(status_code=404, detail={"error": "not_found",
                                                      "detail": "Company not found"})
     meta = dict(row.meta or {})
@@ -231,10 +254,11 @@ def patch_metrics(company_id: str, body: MetricsPatchRequest,
 
 def _persist(repo: Repository, payload, *, mode: str, excel_values: dict,
              debt_instruments: list[dict], peer_tickers: list[str] | None = None,
-             mapping_notes: list | None = None):
+             mapping_notes: list | None = None, owner: str | None = None):
     company_row = repo.save_company(payload.company)
     meta = dict(company_row.meta or {})
     meta.update({
+        "owner": owner or meta.get("owner"),
         "mode": mode,
         "periods": [p.model_dump(mode="json") for p in payload.periods],
         "market": payload.market.model_dump(mode="json"),

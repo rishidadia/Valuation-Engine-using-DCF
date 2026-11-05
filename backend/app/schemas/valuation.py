@@ -31,6 +31,11 @@ class ValuationOptions(BaseModel):
     beta_aggregation: Literal["median", "mean"] = "median"
     discount_convention: Literal["end", "mid"] = "end"
     forecast_years: int = Field(default=5, ge=1, le=15)
+    # Optional forecast trajectories (decimals). Empty -> constant drivers.
+    growth_path: list[float] | None = None
+    ebit_margin_path: list[float] | None = None
+    growth_fade_to_terminal: bool = False
+    margin_convergence_years: int = Field(default=0, ge=0, le=15)
     peer_tickers: list[str] = Field(default_factory=list)
     run_comparables: bool = True
     run_sensitivity: bool = True
@@ -258,6 +263,12 @@ class PeerMetrics(BaseModel):
     ebit: float | None = None
     net_income: float | None = None
     market_cap: float | None = None
+    # Gross debt and cash are kept separately (EV - market cap is NET debt and
+    # must never stand in for the Hamada D/E without being flagged).
+    total_debt: float | None = None
+    cash: float | None = None
+    tax_rate: float | None = None  # effective rate: income tax expense / EBT
+    debt_equity: float | None = None  # gross debt / market cap
     ev_revenue: float | None = None
     ev_ebitda: float | None = None
     ev_ebit: float | None = None

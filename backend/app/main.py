@@ -12,6 +12,7 @@ from .api.routes_company import router as company_router
 from .api.routes_valuation import router as valuation_router
 from .core.config import settings
 from .core.errors import AppError
+from .core.security import PUBLIC_PATHS, configured_keys, set_tenant, tenant_for_key
 from .db.session import init_db
 
 logging.basicConfig(
@@ -36,6 +37,29 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+@app.middleware("http")
+async def api_key_guard(request: Request, call_next):
+    """Require X-API-Key when keys are configured; no-op for local use."""
+    path = request.url.path
+    if (not configured_keys() or not path.startswith("/api")
+            or path in PUBLIC_PATHS or request.method == "OPTIONS"):
+        set_tenant(None)
+        return await call_next(request)
+
+    tenant = tenant_for_key(request.headers.get("x-api-key", ""))
+    if tenant is None:
+        return JSONResponse(
+            status_code=401,
+            content={"error": "unauthorized",
+                     "detail": "Missing or invalid X-API-Key header."},
+        )
+    set_tenant(tenant)
+    return await call_next(request)
+
+
+# Registered after the auth middleware so CORS stays outermost and even 401
+# responses carry the CORS headers a browser needs to read them.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,

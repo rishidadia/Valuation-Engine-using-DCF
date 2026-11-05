@@ -26,7 +26,10 @@ def agent_run(ctx, key: str, agent: str, action: str):
     t0 = time.perf_counter()
     try:
         yield run
-        run.status = "warning" if run.warnings else "success"
+        # Only infer a status when the agent did not assign a terminal one:
+        # an explicit failed/skipped/warning must never be overwritten here.
+        if run.status == "running":
+            run.status = "warning" if run.warnings else "success"
         if not run.result:
             run.result = "completed"
     except Exception as exc:  # noqa: BLE001 — recorded, then re-raised

@@ -159,3 +159,97 @@ def test_empty_workbook_reports_missing_not_fabricated(provider, tmp_path):
     with pytest.raises(ExcelValidationError) as ei:
         asyncio.run(provider.fetch(path, original_name="empty.xlsx"))
     assert "No financial statement rows" in str(ei.value.detail)
+
+
+def test_percentage_assumptions_normalised(provider):
+    """8, 8.00% and 0.08 must all mean 8% (not 800%)."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Assumptions"
+    rows = [
+        ("Revenue Growth", 8),          # percentage points
+        ("EBIT Margin", "8.00%"),       # explicit percent string
+        ("Terminal Growth", 0.08),      # already a decimal
+        ("Tax Rate", 21),               # 21% typed as 21
+        ("Beta", 1.2),                  # ratio, must NOT be divided
+        ("Exit Multiple", 10.0),        # multiple, must NOT be divided
+        ("Forecast Years", 7),          # count, must NOT be divided
+        ("Target D/E", 0.4),            # ratio >0 but <1, must stay
+    ]
+    for i, (label, value) in enumerate(rows, start=2):
+        ws.cell(row=i, column=1, value=label)
+        ws.cell(row=i, column=2, value=value)
+
+    parsed = provider._parse_assumptions(ws)
+
+    assert parsed["revenue_growth"] == pytest.approx(0.08)
+    assert parsed["ebit_margin"] == pytest.approx(0.08)
+    assert parsed["terminal_growth"] == pytest.approx(0.08)
+    assert parsed["tax_rate"] == pytest.approx(0.21)
+    assert parsed["beta"] == pytest.approx(1.2)
+    assert parsed["exit_multiple"] == pytest.approx(10.0)
+    assert parsed["forecast_years"] == pytest.approx(7.0)
+    assert parsed["target_de"] == pytest.approx(0.4)
+
+
+# ---------------- currency & fiscal year ----------------
+
+from datetime import date  # noqa: E402
+
+
+def _simple_statement_book() -> Workbook:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Income Statement"
+    ws["A1"] = "Statement"
+    ws["B1"] = "FY2024"
+    ws["C1"] = "FY2025"
+    for i, (label, v24, v25) in enumerate([
+        ("Revenue", 1000, 1100),
+        ("Operating Income", 180, 200),
+        ("Net Income", 130, 145),
+    ], start=2):
+        ws.cell(row=i, column=1, value=label)
+        ws.cell(row=i, column=2, value=v24)
+        ws.cell(row=i, column=3, value=v25)
+    return wb
+
+
+def test_currency_and_fiscal_year_end_applied(provider, tmp_path):
+    path = _save(_simple_statement_book(), tmp_path / "eur.xlsx")
+    import asyncio
+    payload = asyncio.run(provider.fetch(
+        path, original_name="eur.xlsx", currency="eur", fiscal_year_end="09-30"))
+
+    assert payload.company.currency == "EUR"
+    assert {p.currency for p in payload.periods} == {"EUR"}
+    assert all(p.end_date.month == 9 and p.end_date.day == 30 for p in payload.periods)
+    assert payload.periods[-1].end_date == date(2025, 9, 30)
+    assert any("US-dollar based" in w for w in payload.warnings)
+    assert any("Fiscal year end" in w for w in payload.warnings)
+
+
+def test_currency_detected_from_workbook_header(provider, tmp_path):
+    wb = _simple_statement_book()
+    wb.active["A3"] = "All figures in thousands of GBP"
+    path = _save(wb, tmp_path / "gbp.xlsx")
+    import asyncio
+    payload = asyncio.run(provider.fetch(path, original_name="gbp.xlsx"))
+    assert payload.company.currency == "GBP"
+    assert payload.periods[-1].currency == "GBP"
+
+
+def test_invalid_currency_rejected(provider, tmp_path):
+    path = _save(_simple_statement_book(), tmp_path / "bad.xlsx")
+    import asyncio
+    with pytest.raises(ExcelValidationError) as ei:
+        asyncio.run(provider.fetch(path, original_name="bad.xlsx", currency="EUROS"))
+    assert "Invalid currency" in ei.value.detail
+
+
+def test_invalid_fiscal_year_end_rejected(provider, tmp_path):
+    path = _save(_simple_statement_book(), tmp_path / "bad2.xlsx")
+    import asyncio
+    with pytest.raises(ExcelValidationError) as ei:
+        asyncio.run(provider.fetch(path, original_name="bad2.xlsx", fiscal_year_end="13-45"))
+    assert "Invalid fiscal year end" in ei.value.detail

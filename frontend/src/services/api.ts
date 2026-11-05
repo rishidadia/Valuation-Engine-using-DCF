@@ -16,12 +16,29 @@ export class ApiError extends Error {
   }
 }
 
+/** Optional key for deployments that set DCF_API_KEYS (localStorage, not bundled). */
+function apiKey(): string | null {
+  try {
+    return localStorage.getItem("dcf_api_key");
+  } catch {
+    return null;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
+  const key = apiKey();
+  // FormData must set its own multipart boundary — forcing JSON here would
+  // make Excel uploads unparseable on the server.
+  const isForm = typeof FormData !== "undefined" && init?.body instanceof FormData;
   try {
     res = await fetch(`${BASE}${path}`, {
-      headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
       ...init,
+      headers: {
+        ...(isForm ? {} : { "Content-Type": "application/json" }),
+        ...(key ? { "X-API-Key": key } : {}),
+        ...(init?.headers || {}),
+      },
     });
   } catch (err) {
     throw new ApiError(
@@ -54,10 +71,13 @@ export const api = {
   ingestPublic: (body: { ticker: string; name?: string; peer_tickers?: string[]; include_comparables?: boolean }) =>
     request<IngestResponse>("/company/public", { method: "POST", body: JSON.stringify(body) }),
 
-  uploadExcel: (file: File, companyName?: string) => {
+  uploadExcel: (file: File, companyName?: string,
+                opts?: { currency?: string; fiscal_year_end?: string }) => {
     const fd = new FormData();
     fd.append("file", file);
     if (companyName) fd.append("company_name", companyName);
+    if (opts?.currency) fd.append("currency", opts.currency);
+    if (opts?.fiscal_year_end) fd.append("fiscal_year_end", opts.fiscal_year_end);
     return request<IngestResponse>("/company/upload", { method: "POST", body: fd });
   },
 

@@ -13,8 +13,8 @@ registry (`register_provider` / `get_provider`) and selected by source type.
 - **Endpoint**: `https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json`
   (plus `https://www.sec.gov/files/company_tickers.json` for ticker → CIK resolution
   and `data.sec.gov/submissions/CIK…` for filing metadata).
-- **Requirement**: a descriptive `User-Agent` header (SEC policy), e.g.
-  `DCF-Labs research contact@example.com`.
+- **Requirement**: a descriptive `User-Agent` header with a real contact (SEC policy).
+  Configurable via `SEC_USER_AGENT`; the default names the project maintainer.
 - **Coverage**: last **8 fiscal years** of audited statements.
 - **Metrics**: revenue, COGS, gross profit, operating expenses, EBIT (OperatingIncomeLoss),
   interest, EBT, tax expense, net income, D&A, operating cash flow, CapEx, cash,
@@ -94,3 +94,17 @@ Audit page re-lists sources for the final report.
 - Missing revenue in the latest period is a **critical/audit FAIL** (nothing to value);
   missing shares is a WARNING that leaves `implied_share_price` null.
 - Network errors surface with a machine code and a human hint via `ApiError`.
+
+## 8. Currency and geographic coverage
+
+- Mode A accepts optional `currency` (ISO 4217, e.g. `EUR`) and `fiscal_year_end`
+  (`MM-DD`, e.g. `09-30`) form fields. A currency code found in the workbook header is
+  used when the field is omitted; `USD` and 12-31 remain the defaults.
+- The currency is a **reporting label only** — no FX conversion is applied. Market inputs
+  (risk-free rate, beta benchmark) stay US-dollar based, so a non-USD workbook is flagged
+  with an explicit warning and should have its beta, risk-free rate and MRP overridden.
+- Mode B is US-only by construction: SEC EDGAR XBRL fundamentals, Yahoo prices regressed
+  against SPY, and the FRED DGS10 10-year Treasury yield. Non-US tickers normally fail at
+  the fundamentals step.
+- The SEC requires a truthful contact in the request User-Agent. `SEC_USER_AGENT` defaults
+  to the project maintainer; set it to your own contact for a deployment.
