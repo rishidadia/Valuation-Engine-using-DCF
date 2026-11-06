@@ -56,6 +56,9 @@ class PublicCompanyBody(BaseModel):
     ticker: str = Field(min_length=1, max_length=20)
     name: str | None = Field(default=None, max_length=255)
     exchange: str | None = Field(default=None, max_length=64)
+    # "IN" = NSE India (NSE filings + bhavcopy/Kite data); default/"US" = SEC EDGAR.
+    # A .NS suffix also selects India, so existing US requests are unchanged.
+    market: Literal["US", "IN"] | None = None
     peer_tickers: list[str] = Field(default_factory=list)
     include_comparables: bool = True
 

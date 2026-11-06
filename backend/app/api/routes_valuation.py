@@ -6,9 +6,10 @@ same deterministic stages without re-ingestion and re-persist artifacts.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from ..core.errors import AppError, MissingDataError, NotFoundError, ValidationError
@@ -26,6 +27,7 @@ from ..schemas.common import SourceRecord
 from ..schemas.company import CompanyInfo, PeriodData
 from ..schemas.valuation import ValuationOptions, ValuationView
 from ..services import assumptions as assumptions_svc
+from ..services.report_pdf import render_report_pdf
 from ..services.engine import (
     PipelineContext, build_view, recompute_view,
 )
@@ -92,8 +94,14 @@ async def _ensure_peers(session: Session, company_row: CompanyRow, ctx: Pipeline
         return
     provider = PublicCompanyProvider()
     peers, warnings = [], []
+    # Peers live on the same exchange as the subject (NSE tickers for an NSE name).
+    peer_market = (
+        ctx.market.market
+        or (meta.get("market") or {}).get("market")
+        or "US"
+    )
     for t in tickers[:4]:
-        pm, w = await provider.fetch_peer(t)
+        pm, w = await provider.fetch_peer(t, market=peer_market)
         warnings.extend(w)
         if pm:
             peers.append(pm)
@@ -216,6 +224,26 @@ def get_comparables(valuation_id: str, session: Session = Depends(get_db)):
 @router.get("/valuation/{valuation_id}/report")
 def get_report(valuation_id: str, session: Session = Depends(get_db)):
     return _section(valuation_id, "report", session)
+
+
+@router.get("/valuation/{valuation_id}/report.pdf")
+def get_report_pdf(valuation_id: str, session: Session = Depends(get_db)):
+    """The same report, rendered for print — no numbers are recomputed here."""
+    _, view = _get_view(session, valuation_id)
+    if view.report is None:
+        raise HTTPException(status_code=404, detail={
+            "error": "not_found", "detail": "This valuation has no report to export yet"})
+    try:
+        pdf = render_report_pdf(view)
+    except ValueError as exc:  # pragma: no cover - guarded by the check above
+        raise HTTPException(status_code=404, detail={"error": "not_found", "detail": str(exc)})
+    label = view.company.ticker or view.company.name or "valuation"
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", label).strip("-").lower() or "valuation"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{slug}-valuation-report.pdf"'},
+    )
 
 
 @router.get("/valuation/{valuation_id}/audit")

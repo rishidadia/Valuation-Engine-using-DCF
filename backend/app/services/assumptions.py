@@ -121,6 +121,9 @@ def build_assumptions(
     if rf_excel is not None:
         rf = rf_excel
         rf_source, rf_status, rf_type = "User input", ValueStatus.USER_DATA, SourceType.USER_INPUT
+    elif rf is not None and market.risk_free_is_estimate:
+        rf_source, rf_status, rf_type = (market.risk_free_source or "Model default",
+                                         ValueStatus.ESTIMATED, SourceType.MODEL_ASSUMPTION)
     elif rf is not None:
         rf_source, rf_status, rf_type = (market.risk_free_source or "Public API"), ValueStatus.RETRIEVED, SourceType.PUBLIC_API
     else:
@@ -131,7 +134,8 @@ def build_assumptions(
         key="risk_free_rate", label="Risk-Free Rate", group="wacc", value=rf,
         unit=Unit.PERCENT, model_estimate=rf, user_value=excel_values.get("risk_free_rate"),
         source_type=rf_type, source=rf_source, status=rf_status,
-        note="10-year US Treasury yield (DGS10) unless overridden.",
+        note=(f"Source: {market.risk_free_source}." if market.risk_free_source
+              else "10-year US Treasury yield (DGS10) unless overridden."),
         min_value=-0.02, max_value=0.25,
     )
 
@@ -149,8 +153,10 @@ def build_assumptions(
         out["beta"] = Assumption(
             key="beta", label="Beta", group="wacc", value=beta, unit=Unit.RATIO,
             model_estimate=beta,
-            source_type=SourceType.PUBLIC_API, source="Yahoo Finance price history (OLS vs SPY)",
-            source_url=f"https://finance.yahoo.com/quote/{market.beta_source or ''}".split("?")[0],
+            source_type=SourceType.PUBLIC_API,
+            source=market.beta_provider or "Yahoo Finance price history (OLS vs SPY)",
+            source_url=(market.beta_source_url
+                        or f"https://finance.yahoo.com/quote/{market.beta_source or ''}".split("?")[0]),
             status=ValueStatus.RETRIEVED,
             note=market.beta_source,
             min_value=-1.0, max_value=4.0,
@@ -165,15 +171,24 @@ def build_assumptions(
             min_value=-1.0, max_value=4.0,
         )
 
-    mrp = excel_values.get("market_risk_premium", 0.050)
+    # Foreign listings (NSE) get their own equity risk premium default; it stays
+    # a labelled, editable model assumption exactly like the US 5.00% one.
+    from ..core.config import settings
+    india = market.market == "IN"
+    mrp_default = settings.india_market_risk_premium if india else 0.050
+    mrp = excel_values.get("market_risk_premium", mrp_default)
     out["market_risk_premium"] = Assumption(
         key="market_risk_premium", label="Market Risk Premium", group="wacc", value=mrp,
-        unit=Unit.PERCENT, model_estimate=0.050, user_value=excel_values.get("market_risk_premium"),
+        unit=Unit.PERCENT, model_estimate=mrp_default, user_value=excel_values.get("market_risk_premium"),
         source_type=(SourceType.USER_INPUT if "market_risk_premium" in excel_values
                      else SourceType.MODEL_ASSUMPTION),
-        source=("User input" if "market_risk_premium" in excel_values else "Model default (5.00%)"),
+        source=("User input" if "market_risk_premium" in excel_values else
+                f"Model default — India equity risk premium ({mrp_default:.2%})" if india
+                else "Model default (5.00%)"),
         status=(ValueStatus.USER_DATA if "market_risk_premium" in excel_values else ValueStatus.ESTIMATED),
-        note="Equity risk premium used in CAPM; no free provider publishes a canonical MRP.",
+        note=("Equity risk premium used in CAPM; no free provider publishes a canonical MRP."
+              + (" India default is set for NSE-listed names — override it here if you "
+                 "use a different ERP source." if india else "")),
         min_value=0.0, max_value=0.20,
     )
 
@@ -278,7 +293,7 @@ def build_assumptions(
         value=shares, unit=Unit.COUNT,
         source_type=(SourceType.PUBLIC_API if latest_vals.get("shares_outstanding")
                      else SourceType.USER_INPUT if shares else SourceType.MODEL_ASSUMPTION),
-        source=("SEC EDGAR dei:EntityCommonStockSharesOutstanding"
+        source=((market.shares_provider or "SEC EDGAR dei:EntityCommonStockSharesOutstanding")
                 if latest_vals.get("shares_outstanding")
                 else "User input" if shares else "Missing"),
         status=(ValueStatus.RETRIEVED if latest_vals.get("shares_outstanding")
@@ -292,7 +307,7 @@ def build_assumptions(
         value=price, unit=Unit.CURRENCY,
         source_type=(SourceType.PUBLIC_API if market.share_price
                      else SourceType.USER_INPUT if price else SourceType.MODEL_ASSUMPTION),
-        source=("Yahoo Finance latest close" if market.share_price
+        source=((market.price_provider or "Yahoo Finance latest close") if market.share_price
                 else "User input" if price else "Missing"),
         status=(ValueStatus.RETRIEVED if market.share_price
                 else ValueStatus.USER_DATA if price else ValueStatus.MISSING),

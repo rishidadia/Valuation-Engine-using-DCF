@@ -7,7 +7,7 @@ FCF → DCF → sensitivity → comparables → audit → report.
 
 **Every important number is traceable** to one of exactly four things:
 
-1. a **source** (SEC EDGAR, Yahoo Finance, FRED, an uploaded cell),
+1. a **source** (SEC EDGAR, Yahoo Finance, FRED, NSE India, an uploaded cell),
 2. a **user input** (override),
 3. a **calculation** (pure Python finance math), or
 4. an **explicit model assumption**.
@@ -100,7 +100,7 @@ dcfproject/
 
 | Stage | What happens | Page |
 |---|---|---|
-| 1. Data | Mode A: upload `.xlsx` (heuristic sheet/label/period detection, cell-level provenance `Sheet!rowN`). Mode B: ticker → SEC EDGAR fundamentals (last 8 FYs), Yahoo price + OLS beta vs SPY, FRED DGS10 risk-free. | Data Review |
+| 1. Data | Mode A: upload `.xlsx` (heuristic sheet/label/period detection, cell-level provenance `Sheet!rowN`). Mode B: ticker → SEC EDGAR fundamentals (last 8 FYs), Yahoo price + OLS beta vs SPY, FRED DGS10 risk-free. **India:** select India (NSE) → NSE annual XBRL filings (last 8 FYs), NSE bhavcopy close + OLS beta vs NIFTY 50 (or Zerodha Kite), India 10Y G-Sec risk-free. | Data Review |
 | 2. Assumptions | CAPM or manual cost of equity; beta from market regression, comparables or manual; tax, cost of debt, capital structure. Precedence: **USER OVERRIDE > user input > model estimate**. | Assumptions |
 | 3. Forecast | Driver-based 5-year forecast from historical relationships + assumptions. | Forecast |
 | 4. WACC | R_e = R_f + β·MRP; after-tax cost of debt; weights; live sliders recompute client-side with the same identities. | WACC |
@@ -110,7 +110,7 @@ dcfproject/
 | 8. Scenarios | Base / Bull / Bear / custom deltas applied as overrides, recomputed through the same engine. | Scenarios |
 | 9. Comparables | Peer multiples (MIN_PEERS = 2) from a curated universe or user tickers. | Comps |
 | 10. Audit | 21 checks across 10 families, including independent recomputation of CAPM, WACC, discount factors, TV, EV and the equity bridge; **critical failures block finalization** (`status: blocked`). | Audit |
-| 11. Report | Typed sections, source tables, export as Markdown or full JSON. | Report |
+| 11. Report | Typed sections, source tables, export as **PDF** (server-rendered, print-ready) or full **JSON** (every computed artifact and source). | Report |
 
 ### Contract highlights (spec-critical)
 
@@ -128,12 +128,36 @@ dcfproject/
 
 | Source | Used for | Notes |
 |---|---|---|
-| SEC EDGAR (`data.sec.gov` XBRL companyfacts) | Fundamentals, last 8 FYs, shares | Requires a `User-Agent` header |
-| Yahoo Finance chart API | Price history, OLS beta vs SPY | `query1.finance.yahoo.com/v8/finance/chart` |
-| FRED DGS10 CSV | 10-year risk-free rate | `fredgraph.csv?id=DGS10` |
+| SEC EDGAR (`data.sec.gov` XBRL companyfacts) | US fundamentals, last 8 FYs, shares | Requires a `User-Agent` header |
+| Yahoo Finance chart API | US price history, OLS beta vs SPY | `query1.finance.yahoo.com/v8/finance/chart` |
+| FRED DGS10 CSV | US 10-year risk-free rate | `fredgraph.csv?id=DGS10` |
+| NSE India financial-results feed + XBRL documents | **Indian** fundamentals, last 8 FYs, shares | `nseindia.com/api/corporates-financial-results` and `integrated-filing-results` → ind-AS XBRL on `nsearchives.nseindia.com` |
+| NSE India daily bhavcopy + NIFTY 50 index history | **Indian** price and beta | `sec_bhavdata_full_DDMMYYYY.csv`, `/api/historicalOR/indicesHistory` |
+| Zerodha Kite Connect (optional) | **Indian** price + daily beta instead of bhavcopy | Set `KITE_API_KEY` / `KITE_ACCESS_TOKEN`, `pip install kiteconnect` |
+| FRED `INDIRLTLT01STM` | India 10-year G-Sec risk-free rate | monthly, OECD series republished by FRED |
 | Uploaded workbook (Mode A) | Everything | `.xlsx` only, 10 MB limit, downloadable template |
 
-stooq.com is JS-challenged/blocked and is deliberately not used.
+stooq.com is JS-challenged/blocked and is deliberately not used. **yfinance is not used
+anywhere** — Indian data comes from NSE's own filings, bhavcopy and NIFTY index history
+(or Kite when configured).
+
+### Indian (NSE) companies
+
+On the Data page choose **Market → India (NSE)** and enter the NSE symbol (`RELIANCE`,
+`TCS`, `HDFCBANK`, …). A `.NS` suffix (`RELIANCE.NS`) or `"market": "IN"` in
+`POST /api/company/public` does the same; `.BO` (BSE-only) is rejected with a hint.
+
+- Fundamentals come from the audited annual results each company files with NSE, parsed
+  from the ind-AS XBRL document itself (segment/dimensional contexts are ignored, and
+  NSE's legacy `FourD` cumulative column is handled). Amounts are absolute INR.
+- EBIT = PBT + finance costs, EBITDA = EBIT + D&A, total debt = current + non-current
+  borrowings, and shares = paid-up equity capital / face value are shown as
+  MODEL CALCULATION with the formula; every retrieved value names its XBRL tag.
+- Price is the official NSE bhavcopy close; beta is our OLS regression of month-end
+  closes vs NIFTY 50 (`NSE_BETA_MONTHS`, default 24). The NSE quote JSON endpoint is
+  behind a bot check and is deliberately not used.
+- Risk-free rate is the India 10Y G-Sec via FRED; the India equity risk premium default
+  is 6.50% (`INDIA_MARKET_RISK_PREMIUM`). Both are labelled and editable.
 
 ---
 
@@ -141,7 +165,7 @@ stooq.com is JS-challenged/blocked and is deliberately not used.
 
 ```bash
 cd backend
-python -m pytest tests/        # 125 passed
+python -m pytest tests/        # 135 passed
 ```
 
 Covers: pure formula unit tests (CAPM, WACC, FCF, TV, sensitivity, beta), Excel
@@ -206,9 +230,11 @@ uvicorn, and back up the database. The SEC requires a real contact in the User-A
 
 ## Scope and limitations
 
-- **Geography:** fundamentals come from SEC EDGAR and market inputs from Yahoo/SPY and
-  FRED DGS10, so the engine is a US-company valuation tool. Non-US tickers will usually
-  fail at the fundamentals step.
+- **Geography:** two markets are supported — **US** (SEC EDGAR, Yahoo/SPY, FRED DGS10)
+  and **India/NSE** (NSE XBRL filings, NSE bhavcopy/Kite prices vs NIFTY 50, FRED India
+  10Y G-Sec). Other exchanges are not covered and fail at the fundamentals step.
+- **Banks/NBFCs:** NSE filings are parsed for them too, but a FCFF DCF is not a
+  meaningful model for a bank; revenue falls back to total income and this is warned.
 - **Currency:** the workbook currency is a reporting label, not an FX conversion. A EUR
   workbook is valued with US market inputs unless you override beta, the risk-free rate
   and the risk premium explicitly.

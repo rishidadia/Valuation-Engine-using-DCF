@@ -1,6 +1,8 @@
 /** REPORT — verdict first, then conclusions, then the supporting detail. */
-import { AuditBadge, SectionHeader, VerdictStrip } from "../components/ui";
+import { useState } from "react";
+import { AuditBadge, ErrorBanner, SectionHeader, VerdictStrip } from "../components/ui";
 import { fmtMoney, fmtSigned } from "../lib/format";
+import { api, ApiError } from "../services/api";
 import { useValuation } from "../state/ValuationContext";
 
 const KIND_CLS: Record<string, string> = {
@@ -25,10 +27,23 @@ function kindCls(kind: string): string {
   return KIND_CLS[kind] ?? KIND_CLS.NARRATIVE;
 }
 
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export default function ReportPage() {
-  const { view } = useValuation();
+  const { view, valuationId } = useValuation();
   const report = view?.report;
   const s = view?.summary;
+  const [exportingPdf, setExportingPdf] = useState(false);
+  const [exportError, setExportError] = useState<ApiError | null>(null);
 
   if (!report) {
     return (
@@ -38,24 +53,32 @@ export default function ReportPage() {
     );
   }
 
-  const download = () => {
-    const blob = new Blob([report.markdown], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${(view?.company.ticker ?? view?.company.name ?? "valuation").toLowerCase()}-valuation-report.md`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const id = valuationId ?? view?.summary.id ?? null;
+  const slug = (view?.company.ticker ?? view?.company.name ?? "valuation")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "valuation";
+
+  const downloadPdf = async () => {
+    if (!id) {
+      setExportError(new ApiError(0, "no_valuation", "This report has no stored valuation id yet — re-run the valuation."));
+      return;
+    }
+    setExportingPdf(true);
+    setExportError(null);
+    try {
+      const blob = await api.reportPdf(id);
+      saveBlob(blob, `${slug}-valuation-report.pdf`);
+    } catch (err) {
+      setExportError(err instanceof ApiError ? err : new ApiError(0, "error", String(err)));
+    } finally {
+      setExportingPdf(false);
+    }
   };
 
   const downloadJson = () => {
     const blob = new Blob([JSON.stringify(view, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "valuation-full-audit.json";
-    a.click();
-    URL.revokeObjectURL(url);
+    saveBlob(blob, `${slug}-valuation-full-audit.json`);
   };
 
   // conclusions first, everything else in original order
@@ -70,11 +93,21 @@ export default function ReportPage() {
         right={
           <>
             <AuditBadge status={report.audit_status} />
-            <button className="btn-ghost !py-1.5" onClick={download}>↓ Markdown</button>
-            <button className="btn-ghost !py-1.5" onClick={downloadJson}>↓ Full JSON</button>
+            <button className="btn-ghost !py-1.5" onClick={downloadPdf} disabled={exportingPdf}>
+              {exportingPdf ? "Building PDF…" : "↓ PDF"}
+            </button>
+            <button className="btn-ghost !py-1.5" onClick={downloadJson}>↓ JSON</button>
           </>
         }
       />
+
+      {exportError && (
+        <ErrorBanner
+          message={exportError.message}
+          hint={exportError.hint}
+          onDismiss={() => setExportError(null)}
+        />
+      )}
 
       {/* 1 — the answer, up top, plain language */}
       <VerdictStrip
@@ -135,7 +168,12 @@ export default function ReportPage() {
           Report generated {report.generated_at ? new Date(report.generated_at).toLocaleString() : ""}
           {report.llm_used ? " · narrative sections LLM-drafted, all numbers computed" : " · fully deterministic"}
         </span>
-        <button className="btn-primary !py-1.5" onClick={download}>Export report</button>
+        <div className="flex items-center gap-2">
+          <button className="btn-ghost !py-1.5" onClick={downloadJson}>↓ JSON</button>
+          <button className="btn-primary !py-1.5" onClick={downloadPdf} disabled={exportingPdf}>
+            {exportingPdf ? "Building PDF…" : "↓ Export PDF"}
+          </button>
+        </div>
       </div>
     </div>
   );

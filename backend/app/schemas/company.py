@@ -104,5 +104,6 @@ class PublicCompanyRequest(BaseModel):
     ticker: str = Field(min_length=1, max_length=20)
     name: str | None = None
     exchange: str | None = None
+    market: Literal["US", "IN"] | None = None  # None = infer (US unless .NS)
     include_comparables: bool = True
     peer_tickers: list[str] = Field(default_factory=list)

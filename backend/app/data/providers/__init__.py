@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from .base import DataProvider, MarketSnapshot, ProviderPayload
 from .excel import ExcelProvider
+from .kite import KiteMarketProvider
+from .nse import NseIndiaProvider
 from .public_company import PublicCompanyProvider
 
 _REGISTRY: dict[str, type[DataProvider]] = {
@@ -25,5 +27,6 @@ def get_provider(kind: str) -> DataProvider:
 __all__ = [
     "DataProvider", "MarketSnapshot", "ProviderPayload",
     "ExcelProvider", "PublicCompanyProvider",
+    "NseIndiaProvider", "KiteMarketProvider",
     "register_provider", "get_provider",
 ]

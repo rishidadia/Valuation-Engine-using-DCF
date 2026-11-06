@@ -43,6 +43,16 @@ class MarketSnapshot(BaseModel):
     price_history: list[dict] = Field(default_factory=list)  # [{date, close}] for charts
     warnings: list[str] = Field(default_factory=list)
 
+    # Provenance labels for non-US markets (e.g. NSE). Optional and additive:
+    # when unset the assumption layer keeps its existing Yahoo/SEC/FRED wording.
+    market: str | None = None  # "US" | "IN"
+    price_provider: str | None = None
+    price_source_url: str | None = None
+    beta_provider: str | None = None
+    beta_source_url: str | None = None
+    shares_provider: str | None = None
+    risk_free_is_estimate: bool = False
+
 
 class ProviderPayload(BaseModel):
     """Normalized output every provider must produce."""

@@ -66,10 +66,47 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+/** Binary download (PDF export) with the same error contract as `request`. */
+async function requestBlob(path: string): Promise<Blob> {
+  const key = apiKey();
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, { headers: key ? { "X-API-Key": key } : {} });
+  } catch (err) {
+    throw new ApiError(
+      0,
+      "network_error",
+      `Cannot reach the DCF labs API (${String(err)}).`,
+      "Is the backend running on port 8000?"
+    );
+  }
+  if (!res.ok) {
+    let code = "error";
+    let message = res.statusText || "Request failed";
+    let hint: string | undefined;
+    try {
+      const d = (await res.json()) as Record<string, unknown>;
+      const detail = (d.detail ?? d) as Record<string, unknown>;
+      code = String(detail?.error ?? "error");
+      message = String(detail?.detail ?? message);
+      if (detail?.hint) hint = String(detail.hint);
+    } catch {
+      // non-JSON error body — keep the status text
+    }
+    throw new ApiError(res.status, code, message, hint);
+  }
+  return res.blob();
+}
+
 export const api = {
   // ingest
-  ingestPublic: (body: { ticker: string; name?: string; peer_tickers?: string[]; include_comparables?: boolean }) =>
-    request<IngestResponse>("/company/public", { method: "POST", body: JSON.stringify(body) }),
+  ingestPublic: (body: {
+    ticker: string;
+    name?: string;
+    market?: "US" | "IN";
+    peer_tickers?: string[];
+    include_comparables?: boolean;
+  }) => request<IngestResponse>("/company/public", { method: "POST", body: JSON.stringify(body) }),
 
   uploadExcel: (file: File, companyName?: string,
                 opts?: { currency?: string; fiscal_year_end?: string }) => {
@@ -115,6 +152,9 @@ export const api = {
     request<ValuationView>(`/valuation/${id}/scenarios`, { method: "POST", body: JSON.stringify(body) }),
 
   getSection: <T>(id: string, section: string) => request<T>(`/valuation/${id}/${section}`),
+
+  /** The persisted report, rendered server-side as a print-ready PDF. */
+  reportPdf: (id: string) => requestBlob(`/valuation/${id}/report.pdf`),
 
   listValuations: () =>
     request<{ valuations: { id: string; name: string | null; ticker: string | null; status: string; implied_share_price: number | null; created_at: string | null }[] }>(

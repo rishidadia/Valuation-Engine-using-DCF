@@ -22,7 +22,7 @@ interface Ctx {
   error: ApiError | null;
   notice: string | null;
   setIngest: (r: IngestResponse) => void;
-  run: (overrides?: Record<string, number>, options?: Record<string, unknown>) => Promise<void>;
+  run: (overrides?: Record<string, number>, options?: Record<string, unknown>) => Promise<boolean>;
   reload: () => Promise<void>;
   applyAssumptions: (
     overrides: Record<string, number>,
@@ -92,6 +92,11 @@ export function ValuationProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(LS_COMPANY, r.company_id);
     localStorage.setItem(LS_MODE, r.mode);
     sessionStorage.setItem(LS_REVIEW, JSON.stringify(r.review));
+    // New or corrected data invalidates the previous valuation: showing an old
+    // valuation next to new numbers is exactly how wrong conclusions happen.
+    localStorage.removeItem(LS_VALUATION);
+    setValuationId(null);
+    setView(null);
     setError(null);
   }, []);
 
@@ -100,7 +105,7 @@ export function ValuationProvider({ children }: { children: ReactNode }) {
       const cid = companyId ?? localStorage.getItem(LS_COMPANY);
       if (!cid) {
         setError(new ApiError(0, "no_company", "No company ingested yet."));
-        return;
+        return false;
       }
       setBusy(true);
       setError(null);
@@ -115,8 +120,10 @@ export function ValuationProvider({ children }: { children: ReactNode }) {
             ? "Valuation computed but BLOCKED by audit — review the Audit section."
             : "Valuation complete."
         );
+        return true;
       } catch (err) {
         setError(err instanceof ApiError ? err : new ApiError(0, "error", String(err)));
+        return false;
       } finally {
         setBusy(false);
         setNotice(null);

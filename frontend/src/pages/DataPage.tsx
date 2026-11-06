@@ -11,7 +11,13 @@ export default function DataPage() {
   const [params, setParams] = useSearchParams();
   const mode = (params.get("mode") as "upload" | "public" | null) ?? "public";
   const { setIngest, run, busy, review, error, clearError, companyId, view } = useValuation();
+  const [dirtyCorrections, setDirtyCorrections] = useState(false);
   const navigate = useNavigate();
+
+  // Revenue is the one figure a DCF cannot invent: without it the backend audit
+  // blocks the valuation, so the button is disabled here with the reason shown.
+  const revenueMissing = Boolean(review && review.missing_critical.includes("revenue"));
+  const latestPeriod = review?.periods.at(-1) ?? "the latest period";
 
   return (
     <div>
@@ -39,32 +45,73 @@ export default function DataPage() {
 
       {mode === "public" ? <PublicForm onIngest={setIngest} busy={busy} /> : <UploadForm onIngest={setIngest} busy={busy} />}
 
-      {review && <ReviewTable key={review.company.name + review.periods.join()} review={review} companyId={companyId} />}
+      {review && (
+        <ReviewTable
+          key={review.company.name + review.periods.join()}
+          review={review}
+          companyId={companyId}
+          onDirtyChange={setDirtyCorrections}
+        />
+      )}
 
       {review && !view && (
-        <div className="mt-6 flex items-center gap-4">
+        <div className="mt-6 flex flex-wrap items-center gap-4">
           <button
             className="btn-primary"
-            disabled={busy}
+            disabled={busy || dirtyCorrections || revenueMissing}
             onClick={async () => {
-              await run();
-              navigate("/workspace/assumptions");
+              const ok = await run();
+              if (ok) navigate("/workspace/assumptions");
             }}
           >
             {busy ? "Running agents…" : "Run valuation →"}
           </button>
-          <span className="text-[12px] text-dim">
-            Takes the numbers above through forecast → WACC → cash flow → DCF → sensitivity →
-            audit → report. A short progress window appears while it runs.
-          </span>
+          {revenueMissing ? (
+            <span className="text-[12px] text-down">
+              Revenue is missing for {latestPeriod} — enter it with <em>edit</em> and save before
+              running. A valuation without revenue would be invented, not calculated.
+            </span>
+          ) : dirtyCorrections ? (
+            <span className="text-[12px] text-warn">
+              You have unsaved corrections — save them first, or the valuation runs on the old
+              numbers.
+            </span>
+          ) : (
+            <span className="text-[12px] text-dim">
+              Takes the numbers above through forecast → WACC → cash flow → DCF → sensitivity →
+              audit → report. A short progress window appears while it runs.
+            </span>
+          )}
         </div>
       )}
-      {view && (
-        <div className="mt-6 flex items-center gap-3">
+      {view && !review && (
+        <div className="mt-6 flex flex-wrap items-center gap-3">
           <button className="btn-ghost" onClick={() => navigate("/workspace/assumptions")}>
             Continue to assumptions →
           </button>
-          <span className="text-[12px] text-dim">A valuation already exists — data changes require a re-run.</span>
+          <span className="text-[12px] text-dim">
+            A stored valuation for {view.company.name} is loaded. Fetch a ticker or upload a
+            workbook above to replace these numbers.
+          </span>
+        </div>
+      )}
+      {review && view && (
+        <div className="mt-6 flex flex-wrap items-center gap-3">
+          <button
+            className="btn-ghost"
+            disabled={dirtyCorrections}
+            onClick={() => navigate("/workspace/assumptions")}
+          >
+            Continue to assumptions →
+          </button>
+          <button className="btn-ghost" disabled={busy || dirtyCorrections || revenueMissing} onClick={() => void run()}>
+            Re-run with the data above
+          </button>
+          <span className="text-[12px] text-dim">
+            {dirtyCorrections
+              ? "Save your corrections first — then re-run."
+              : "A valuation already exists for these numbers — data changes require a re-run."}
+          </span>
         </div>
       )}
     </div>
@@ -75,19 +122,27 @@ function PublicForm({
   onIngest, busy,
 }: { onIngest: (r: IngestResponse) => void; busy: boolean }) {
   const [ticker, setTicker] = useState("");
+  const [market, setMarket] = useState<"US" | "IN">("US");
   const [peers, setPeers] = useState("");
   const [local, setLocal] = useState<ApiError | null>(null);
   const [pending, setPending] = useState(false);
   const [ingestAgents, setIngestAgents] = useState<IngestResponse["agents"]>([]);
+  const isIndia = market === "IN";
+  const cleanTicker = ticker.trim().toUpperCase();
+  const tickerInvalid = cleanTicker !== "" && !/^[A-Z0-9][A-Z0-9.&-]{0,19}$/.test(cleanTicker);
+  const bseOnly = /\.BO$/.test(cleanTicker);
+  const canSubmit = cleanTicker !== "" && !tickerInvalid && !bseOnly && !busy && !pending;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canSubmit) return;
     setLocal(null);
     setPending(true);
     try {
       const peerList = peers.split(/[,\s]+/).map((s) => s.trim().toUpperCase()).filter(Boolean);
       const r = await api.ingestPublic({
-        ticker: ticker.trim().toUpperCase(),
+        ticker: cleanTicker,
+        market,
         peer_tickers: peerList,
         include_comparables: true,
       });
@@ -103,29 +158,49 @@ function PublicForm({
   return (
     <form onSubmit={submit} className="panel px-4 py-4">
       {local && <ErrorBanner message={local.message} hint={local.hint} onDismiss={() => setLocal(null)} />}
-      <div className="grid gap-4 sm:grid-cols-[180px_1fr_auto] sm:items-end">
+      <div className="grid gap-4 sm:grid-cols-[150px_170px_1fr_auto] sm:items-end">
         <label className="block">
           <span className="micro">Ticker</span>
           <input
             className="input mt-1 uppercase"
-            placeholder="AAPL"
+            placeholder={isIndia ? "RELIANCE" : "AAPL"}
             value={ticker}
             onChange={(e) => setTicker(e.target.value.toUpperCase())}
-            maxLength={12}
+            onBlur={() => setTicker((t) => t.trim())}
+            maxLength={20}
+            autoComplete="off"
+            spellCheck={false}
+            aria-invalid={tickerInvalid || bseOnly}
             disabled={pending}
           />
+        </label>
+        <label className="block">
+          <span className="micro">Market</span>
+          <select
+            className="input mt-1"
+            value={market}
+            onChange={(e) => {
+              setMarket(e.target.value as "US" | "IN");
+              // peers are market-specific; never send SEC peers to NSE (or vice versa)
+              setPeers("");
+            }}
+            disabled={pending}
+          >
+            <option value="US">United States (SEC)</option>
+            <option value="IN">India (NSE)</option>
+          </select>
         </label>
         <label className="block">
           <span className="micro">Peer tickers (optional — comma separated)</span>
           <input
             className="input mt-1"
-            placeholder="MSFT, GOOGL, META"
+            placeholder={isIndia ? "INFY, HCLTECH, WIPRO" : "MSFT, GOOGL, META"}
             value={peers}
             onChange={(e) => setPeers(e.target.value)}
             disabled={pending}
           />
         </label>
-        <button className="btn-primary h-[34px]" disabled={busy || pending || !ticker.trim()}>
+        <button className="btn-primary h-[34px]" disabled={!canSubmit}>
           {pending ? (
             <>
               <span className="h-3 w-3 animate-spin rounded-full border border-accent-dim border-t-transparent" />
@@ -136,17 +211,37 @@ function PublicForm({
           )}
         </button>
       </div>
+      {(tickerInvalid || bseOnly) && (
+        <p className="mt-2 text-[11.5px] text-down">
+          {bseOnly
+            ? `${cleanTicker} is a BSE code. Use the NSE symbol instead (e.g. ${cleanTicker.replace(/\.BO$/, "")}) with Market set to India (NSE).`
+            : "A ticker is letters and numbers with optional dots or dashes — e.g. AAPL, BRK.B, RELIANCE.NS."}
+        </p>
+      )}
       {pending && (
         <p className="mt-3 text-[12px] text-accent animate-fade-in">
-          Contacting SEC EDGAR, Yahoo Finance and FRED for {ticker.trim().toUpperCase()} —
-          usually a few seconds. Please don't close this page.
+          {isIndia
+            ? `Contacting NSE India for ${ticker.trim().toUpperCase()} — annual XBRL filings, bhavcopy close and NIFTY 50 beta. This can take a few seconds.`
+            : `Contacting SEC EDGAR, Yahoo Finance and FRED for ${ticker.trim().toUpperCase()} — usually a few seconds.`}{" "}
+          Please don't close this page.
         </p>
       )}
       {!pending && (
         <p className="mt-3 text-[11.5px] text-dim">
-          Where the numbers come from: company filings (SEC EDGAR), share price and beta
-          (Yahoo Finance), risk-free rate (US Treasury via FRED). Anything we can't find is
-          left blank for you to fill in — never guessed.
+          {isIndia ? (
+            <>
+              Where the numbers come from: NSE India annual filings (XBRL), the official NSE
+              bhavcopy close and NSE NIFTY 50 history for beta (or Zerodha Kite when
+              configured), risk-free rate (India 10Y G-Sec via FRED). Nothing is scraped from
+              yfinance; anything we can't find is left blank for you to fill in.
+            </>
+          ) : (
+            <>
+              Where the numbers come from: company filings (SEC EDGAR), share price and beta
+              (Yahoo Finance), risk-free rate (US Treasury via FRED). Anything we can't find is
+              left blank for you to fill in — never guessed.
+            </>
+          )}
         </p>
       )}
       {ingestAgents.length > 0 && (
@@ -251,12 +346,20 @@ function UploadForm({ onIngest, busy }: { onIngest: (r: IngestResponse) => void;
   );
 }
 
-function ReviewTable({ review, companyId }: { review: DataReview; companyId: string | null }) {
+function ReviewTable({
+  review, companyId, onDirtyChange,
+}: { review: DataReview; companyId: string | null; onDirtyChange?: (dirty: boolean) => void }) {
   const rows = review.rows;
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [local, setLocal] = useState<ApiError | null>(null);
   const { setIngest, mode } = useValuation();
+
+  // Tell the page about unsaved corrections so it can stop a run that would use
+  // the old numbers.
+  useEffect(() => {
+    onDirtyChange?.(Object.keys(edits).length > 0);
+  }, [edits, onDirtyChange]);
 
   const missing = rows.filter((r) => r.status === "Missing");
   const total = rows.length;
@@ -292,7 +395,7 @@ function ReviewTable({ review, companyId }: { review: DataReview; companyId: str
       <ContextLabel
         items={[
           { k: "Whose data", v: `${review.company.name}${review.company.ticker ? ` (${review.company.ticker})` : ""}` },
-          { k: "Where from", v: review.company.provider === "excel" ? "Your uploaded workbook" : "Official SEC filings + market data" },
+          { k: "Where from", v: review.company.provider === "excel" ? "Your uploaded workbook" : review.company.provider === "nse_india" ? "NSE India filings + NSE market data" : "Official SEC filings + market data" },
           { k: "Periods", v: review.periods.join(", ") || "—" },
           { k: "Currency", v: review.company.currency || "n/a" },
           { k: "What next", v: "Check these figures, correct anything wrong, then run the valuation" },

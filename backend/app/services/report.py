@@ -227,7 +227,7 @@ def build_report(
         heading="5. Forecast Assumptions & Overrides",
         kind="USER OVERRIDE" if overrides else "ASSUMPTION",
         body=("User overrides applied to: " + ", ".join(a.label for a in overrides)
-              + "\n" if overrides else "All inputs are model estimates or retrieved data.") +
+              + "\n" if overrides else "All inputs are model estimates or retrieved data.\n") +
              "Precedence: USER OVERRIDE > user data > model estimate.",
         table=_table(["Input", "Final used", "Historical", "Model estimate",
                       "User override", "Source type"], arows),

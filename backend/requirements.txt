@@ -11,9 +11,15 @@ langgraph>=1.0.0
 httpx>=0.27
 openpyxl>=3.1.5
 python-multipart>=0.0.9
+reportlab>=4.0
+
 pytest>=8.0
 pytest-asyncio>=0.24
 
 # Optional LLM providers (the pipeline runs deterministically without any of them)
 langchain-openai>=0.3
 langchain-core>=0.3
+
+# Optional — only needed for Zerodha Kite market data (KITE_API_KEY / KITE_ACCESS_TOKEN).
+# NSE bhavcopy prices/beta work keyless without it, so it is not installed by default.
+# kiteconnect>=5.0

@@ -35,6 +35,31 @@ class Settings(BaseSettings):
     yahoo_chart_url: str = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
     fred_risk_free_url: str = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10"
 
+    # --- India / NSE (keyless, straight from nseindia.com) ---
+    nse_base_url: str = "https://www.nseindia.com"
+    nse_archive_url: str = "https://nsearchives.nseindia.com"
+    nse_financial_results_path: str = "/api/corporates-financial-results"
+    nse_integrated_filings_path: str = "/api/integrated-filing-results"
+    nse_index_history_path: str = "/api/historicalOR/indicesHistory"
+    nse_bhavcopy_url: str = (
+        "https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_{date}.csv"
+    )
+    nse_benchmark_index: str = "NIFTY 50"
+    # Beta for NSE names is an OLS regression on month-end closes taken from the
+    # official bhavcopy (one file per month) against the NIFTY 50 index.
+    nse_beta_months: int = 24
+    nse_max_filing_downloads: int = 8
+    india_risk_free_url: str = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=INDIRLTLT01STM"
+    india_risk_free_fallback: float = 0.070
+    # India equity risk premium default (a labelled model assumption, editable).
+    india_market_risk_premium: float = 0.065
+
+    # --- Zerodha Kite Connect (optional market data for NSE names) ---
+    # Set both to route Indian price/beta through Kite instead of NSE bhavcopy.
+    # Kite never supplies fundamentals — those always come from NSE filings.
+    kite_api_key: str | None = None
+    kite_access_token: str | None = None
+
     http_timeout_seconds: float = 20.0
     provider_cache_ttl_seconds: int = 3600
 

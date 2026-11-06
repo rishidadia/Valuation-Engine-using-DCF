@@ -91,7 +91,9 @@ START → research → data → validation → historical → forecast → wacc 
 5. **Audit** — 21 checks across 10 families, including independent recomputation of
    CAPM, WACC, discount factors, terminal value, EV and the equity bridge; a critical
    failure blocks finalization.
-6. **Report** — typed sections rendered as Markdown or full JSON export.
+6. **Report** — typed sections rendered for the screen, exported as PDF
+   (`GET /api/valuation/{id}/report.pdf`, rendered from the persisted report with no
+   recomputation) or as the full JSON artifact.
 
 ## Frontend structure
 

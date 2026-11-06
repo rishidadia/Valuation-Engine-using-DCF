@@ -48,7 +48,7 @@ async def ingest_public(body: PublicCompanyBody, session: Session = Depends(_ses
     provider = PublicCompanyProvider()
     try:
         payload, runs, _ = await data_agent.ingest(
-            provider, ticker=body.ticker,
+            provider, ticker=body.ticker, market=body.market,
             include_comparables=body.include_comparables,
             peer_tickers=body.peer_tickers,
         )
